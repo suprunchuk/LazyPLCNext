@@ -38,29 +38,53 @@ const (
 	RepoName       = "LazyPLCNext"
 )
 
-// AppVersion устанавливается автоматически через -ldflags при сборке в GitHub Actions
-// Если запуск локальный, будет значение "dev"
 var AppVersion = "dev"
 
+// --- THEME & STYLES ---
+
 var (
-	appStyle = lipgloss.NewStyle().Margin(1, 2)
+	// Colors
+	primaryColor   = lipgloss.Color("#25A065") // Phoenix Green
+	secondaryColor = lipgloss.Color("#006E53") // Darker Green
+	accentColor    = lipgloss.Color("#EFB335") // Warning/Accent Yellow
+	textColor      = lipgloss.Color("#FAFAFA")
+	subTextColor   = lipgloss.Color("#787878")
+	errorColor     = lipgloss.Color("#FF453A")
 
-	titleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFDF5")).
-			Background(lipgloss.Color("#25A065")).
-			Padding(0, 1)
+	// Base Styles
+	docStyle = lipgloss.NewStyle().Margin(1, 2)
 
-	statusMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#04B575")).
-				Render
-
-	errorMessageStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FF0000")).
-				Render
+	// Text Styles
+	subTextStyle = lipgloss.NewStyle().Foreground(subTextColor)
 
 	// List Styles
-	verStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#04B575")).Bold(true) // Phoenix Green-ish
-	dirStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5C5C5C"))
+	titleStyle = lipgloss.NewStyle().
+			Foreground(textColor).
+			Background(secondaryColor).
+			Padding(0, 1).
+			Bold(true)
+
+	itemTitleStyle = lipgloss.NewStyle().
+			Foreground(textColor).
+			Bold(true)
+
+	itemDescStyle = lipgloss.NewStyle().
+			Foreground(subTextColor)
+
+	selectedItemStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder(), false, false, false, true).
+				BorderForeground(primaryColor).
+				Foreground(primaryColor).
+				Padding(0, 0, 0, 1)
+
+	// Box/Panel Styles
+	boxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(primaryColor).
+			Padding(1, 2)
+
+	focusedInputStyle = lipgloss.NewStyle().
+				Foreground(primaryColor)
 )
 
 // ======================================================================================
@@ -106,38 +130,29 @@ type GitHubRelease struct {
 }
 
 func checkUpdate() (string, string, error) {
-	// Если версия dev, пропускаем проверку (для локальной разработки)
 	if AppVersion == "dev" {
 		return "", "", nil
 	}
-
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", RepoOwner, RepoName)
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("github api status: %s", resp.Status)
 	}
-
 	var release GitHubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		return "", "", err
 	}
-
-	// Сравниваем версии (простое строковое сравнение)
-	// В GitHub Actions мы задаем версию как v1.0.X.
 	if release.TagName != "" && release.TagName != AppVersion {
 		for _, asset := range release.Assets {
-			// Ищем exe файл
 			if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
 				return release.TagName, asset.BrowserDownloadURL, nil
 			}
 		}
 	}
-
 	return "", "", nil
 }
 
@@ -147,8 +162,6 @@ func doUpdate(url string) error {
 		return err
 	}
 	defer resp.Body.Close()
-
-	// selfupdate делает магию под Windows: переименовывает текущий exe в .old и пишет новый
 	err = selfupdate.Apply(resp.Body, selfupdate.Options{})
 	if err != nil {
 		return err
@@ -157,7 +170,7 @@ func doUpdate(url string) error {
 }
 
 // ======================================================================================
-// LOGGING & BUSINESS LOGIC
+// BUSINESS LOGIC (UNCHANGED)
 // ======================================================================================
 
 func WriteLog(msg string) {
@@ -232,7 +245,6 @@ func extractVersionFromZip(path string) (string, error) {
 			if err != nil {
 				continue
 			}
-
 			if ver := findVersionInXML(strings.NewReader(string(content))); ver != "" {
 				return ver, nil
 			}
@@ -248,7 +260,6 @@ func extractVersionFromFolder(folderPath string) string {
 	candidates := []string{
 		filepath.Join(folderPath, "_properties", "additional.xml"),
 	}
-
 	contentDir := filepath.Join(folderPath, "content")
 	if entries, err := os.ReadDir(contentDir); err == nil {
 		for _, e := range entries {
@@ -257,7 +268,6 @@ func extractVersionFromFolder(folderPath string) string {
 			}
 		}
 	}
-
 	for _, file := range candidates {
 		content, err := os.ReadFile(file)
 		if err != nil {
@@ -275,18 +285,15 @@ func extractVersionFromFolder(folderPath string) string {
 
 func ScanProjects(root string) []ProjectInfo {
 	var projects []ProjectInfo
-
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-
 		if d.IsDir() {
 			name := strings.ToLower(d.Name())
 			if strings.HasPrefix(name, ".") || name == "bin" || name == "obj" {
 				return filepath.SkipDir
 			}
-
 			if _, err := os.Stat(filepath.Join(path, "Solution.xml")); err == nil {
 				ver := extractVersionFromFolder(path)
 				projects = append(projects, ProjectInfo{
@@ -296,10 +303,8 @@ func ScanProjects(root string) []ProjectInfo {
 			}
 			return nil
 		}
-
 		name := d.Name()
 		lowerName := strings.ToLower(name)
-
 		if strings.HasSuffix(lowerName, ".pcwex") {
 			ver, _ := extractVersionFromZip(path)
 			if ver == "" {
@@ -310,7 +315,6 @@ func ScanProjects(root string) []ProjectInfo {
 			})
 			return nil
 		}
-
 		if strings.HasSuffix(lowerName, ".pcwef") {
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			flatFolder := filepath.Join(filepath.Dir(path), baseName+"Flat")
@@ -323,14 +327,11 @@ func ScanProjects(root string) []ProjectInfo {
 			})
 			return nil
 		}
-
 		return nil
 	})
-
 	if err != nil {
 		WriteLog(fmt.Sprintf("Scan error: %v", err))
 	}
-
 	return projects
 }
 
@@ -340,15 +341,12 @@ func FindInstalledIDEs() map[string]string {
 	if err != nil {
 		return versions
 	}
-
 	re := regexp.MustCompile(`PLCnext Engineer (\d+(\.\d+)+)`)
 	exeNames := []string{"PLCNENG64.exe", "PLCnextEngineer.exe"}
-
 	for _, e := range entries {
 		if e.IsDir() && re.MatchString(e.Name()) {
 			matches := re.FindStringSubmatch(e.Name())
 			ver := matches[1]
-
 			for _, exe := range exeNames {
 				fullExe := filepath.Join(IDEBasePath, e.Name(), exe)
 				if _, err := os.Stat(fullExe); err == nil {
@@ -370,7 +368,6 @@ func GetRunningIDE(targetVer string) (string, int32, bool) {
 			dir := filepath.Base(filepath.Dir(exePath))
 			re := regexp.MustCompile(`(\d+(\.\d+)+)`)
 			match := re.FindString(dir)
-
 			if match == targetVer {
 				return exePath, p.Pid, true
 			}
@@ -380,7 +377,7 @@ func GetRunningIDE(targetVer string) (string, int32, bool) {
 }
 
 // ======================================================================================
-// UI: CUSTOM LIST DELEGATE
+// UI: CUSTOM LIST DELEGATE (IMPROVED)
 // ======================================================================================
 
 type projectDelegate struct{}
@@ -394,37 +391,39 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		return
 	}
 
-	title := p.Name
-	icon := "[?]"
+	// Icons for cleaner look
+	icon := "📦" // PCWEX
+	typeStr := "ARCHIVE"
 	switch p.Type {
-	case TypePCWEX:
-		icon = "[ZIP]"
 	case TypeFlat:
-		icon = "[DIR]"
+		icon = "📂" // Folder
+		typeStr = "FOLDER"
 	case TypePCWEF:
-		icon = "[LNK]"
+		icon = "🔗" // Shortcut
+		typeStr = "LINK"
 	}
 
-	verStr := fmt.Sprintf("v%s", p.Version)
-	desc := p.Path
+	name := p.Name
+	ver := fmt.Sprintf("v%s", p.Version)
+	meta := fmt.Sprintf("%s • %s", typeStr, ver)
+	path := p.Path
+
+	var (
+		titleRes string
+		descRes  string
+	)
 
 	if index == m.Index() {
-		selectedTitle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("#25A065")).
-			Padding(0, 1).
-			Render(fmt.Sprintf("%s %s", icon, title))
-
-		selectedVer := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("#25A065")).
-			Render(verStr)
-
-		fmt.Fprintf(w, "%s %s\n  %s", selectedTitle, selectedVer, dirStyle.Render(desc))
+		// Selected State
+		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, name))
+		descRes = selectedItemStyle.Copy().UnsetBorderStyle().Render(fmt.Sprintf("%s | %s", meta, path))
 	} else {
-		normalTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Render(fmt.Sprintf("%s %s", icon, title))
-		fmt.Fprintf(w, "%s %s\n  %s", normalTitle, verStyle.Render(verStr), dirStyle.Render(desc))
+		// Normal State
+		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, name))
+		descRes = itemDescStyle.Render(fmt.Sprintf("%s | %s", meta, path))
 	}
+
+	fmt.Fprint(w, titleRes+"\n"+descRes)
 }
 
 // ======================================================================================
@@ -439,8 +438,8 @@ const (
 	StateLaunching
 	StateSuccess
 	StateError
-	StateUpdateFound // New State for Update
-	StateUpdating    // New State while downloading
+	StateUpdateFound
+	StateUpdating
 )
 
 type model struct {
@@ -454,8 +453,8 @@ type model struct {
 	err         error
 	width       int
 	height      int
-	updateVer   string // New version found
-	updateURL   string // Download URL
+	updateVer   string
+	updateURL   string
 }
 
 func initialModel() model {
@@ -463,11 +462,13 @@ func initialModel() model {
 	ti.Placeholder = "C:\\PhoenixProjects"
 	ti.Focus()
 	ti.CharLimit = 256
-	ti.Width = 60
+	ti.Width = 50
+	ti.PromptStyle = focusedInputStyle
+	ti.TextStyle = focusedInputStyle
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#25A065"))
+	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
 
 	m := model{
 		state:     StateConfig,
@@ -508,30 +509,29 @@ func (m *model) reloadList() {
 		items[i] = p
 	}
 
-	l := list.New(items, projectDelegate{}, 0, 0)
-	l.Title = fmt.Sprintf("PLCnext Projects (%s)", AppVersion) // Показываем версию в заголовке
+	// Customize the list appearance
+	delegate := projectDelegate{}
+	l := list.New(items, delegate, 0, 0)
+	l.Title = "PLCnext Projects"
 	l.SetShowHelp(false)
 	l.Styles.Title = titleStyle
+	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
 
+	// Status bar / help keys
 	l.AdditionalFullHelpKeys = func() []key.Binding {
 		return []key.Binding{
-			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change folder")),
-		}
-	}
-	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{
-			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "config")),
+			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change path")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "launch")),
 		}
 	}
 
 	m.list = l
 	m.state = StateList
 	if m.width > 0 {
-		m.list.SetSize(m.width, m.height-2)
+		m.list.SetSize(m.width, m.height-2) // Reserve space for borders/footer
 	}
 }
 
-// Сообщения для обновления
 type updateCheckMsg struct {
 	version string
 	url     string
@@ -539,7 +539,6 @@ type updateCheckMsg struct {
 }
 type updateDoneMsg struct{ err error }
 
-// Команда проверки обновления
 func checkUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
 		ver, url, err := checkUpdate()
@@ -547,7 +546,6 @@ func checkUpdateCmd() tea.Cmd {
 	}
 }
 
-// Команда выполнения обновления
 func performUpdateCmd(url string) tea.Cmd {
 	return func() tea.Msg {
 		err := doUpdate(url)
@@ -556,7 +554,6 @@ func performUpdateCmd(url string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	// При старте мигаем курсором и проверяем обновления
 	return tea.Batch(textinput.Blink, checkUpdateCmd())
 }
 
@@ -566,12 +563,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		docStyle = docStyle.MaxWidth(m.width).MaxHeight(m.height)
 		if m.state == StateList {
-			m.list.SetSize(msg.Width, msg.Height-2)
+			m.list.SetSize(msg.Width-4, msg.Height-4) // Adjust for margins
 		}
 
 	case updateCheckMsg:
-		// Если нашли новую версию
 		if msg.err == nil && msg.version != "" {
 			m.updateVer = msg.version
 			m.updateURL = msg.url
@@ -583,7 +580,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			m.state = StateError
 		} else {
-			m.logMsg = "Update successful! Please restart the application."
+			m.logMsg = "Update successful! Please restart."
 			m.state = StateSuccess
 		}
 
@@ -591,21 +588,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-		if m.state == StateList && msg.String() == "q" {
+		// Allow quitting from list with Q if not filtering
+		if m.state == StateList && msg.String() == "q" && m.list.FilterState() != list.Filtering {
 			return m, tea.Quit
 		}
 	}
 
 	switch m.state {
 	case StateUpdateFound:
-		// Логика окна "Найдено обновление"
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
 			case "y", "Y", "enter":
 				m.state = StateUpdating
 				return m, tea.Batch(m.spinner.Tick, performUpdateCmd(m.updateURL))
 			case "n", "N", "esc":
-				m.state = StateList // Отказ от обновления, идем в список
+				m.state = StateList
 				return m, nil
 			}
 		}
@@ -614,13 +611,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateUpdating:
 		var spinCmd tea.Cmd
 		m.spinner, spinCmd = m.spinner.Update(msg)
-		// Ждем updateDoneMsg
 		return m, spinCmd
 
 	case StateConfig:
 		var tiCmd tea.Cmd
 		m.textInput, tiCmd = m.textInput.Update(msg)
-
 		if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter {
 			path := strings.TrimSpace(m.textInput.Value())
 			if path != "" {
@@ -630,7 +625,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.reloadList()
 					return m, nil
 				} else {
-					m.textInput.Placeholder = "Path not found or not a directory"
+					m.textInput.Placeholder = "Invalid directory!"
 					m.textInput.SetValue("")
 				}
 			}
@@ -639,13 +634,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StateList:
 		if key, ok := msg.(tea.KeyMsg); ok {
-			if key.String() == "c" {
-				m.state = StateConfig
-				m.textInput.SetValue("")
-				m.textInput.Focus()
-				return m, nil
+			if m.list.FilterState() != list.Filtering {
+				if key.String() == "c" {
+					m.state = StateConfig
+					m.textInput.SetValue("")
+					m.textInput.Focus()
+					return m, nil
+				}
 			}
-			if key.Type == tea.KeyEnter {
+			if key.Type == tea.KeyEnter && m.list.FilterState() != list.Filtering {
 				if i, ok := m.list.SelectedItem().(ProjectInfo); ok {
 					m.selectedPrj = i
 					m.state = StateLaunching
@@ -660,14 +657,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateLaunching:
 		var spinCmd tea.Cmd
 		m.spinner, spinCmd = m.spinner.Update(msg)
-
-		switch msg := msg.(type) {
-		case launchResultMsg:
-			if msg.err != nil {
-				m.err = msg.err
+		if res, ok := msg.(launchResultMsg); ok {
+			if res.err != nil {
+				m.err = res.err
 				m.state = StateError
 			} else {
-				m.logMsg = msg.message
+				m.logMsg = res.message
 				m.state = StateSuccess
 			}
 			if m.state == StateSuccess {
@@ -688,73 +683,101 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// ======================================================================================
+// VIEW (THE PRETTY PART)
+// ======================================================================================
+
 func (m model) View() string {
+	// Center content helper
+	centerContent := func(content string) string {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			content)
+	}
+
 	switch m.state {
 	case StateUpdateFound:
-		return appStyle.Render(fmt.Sprintf(
-			"%s\n\n"+
-				"New version available: %s\n"+
-				"Current version: %s\n\n"+
-				"%s",
-			titleStyle.Render("Update Available"),
-			verStyle.Render(m.updateVer),
-			m.configVersionView(),
-			dirStyle.Render("Do you want to update now? (y/n)"),
-		))
+		ui := lipgloss.JoinVertical(lipgloss.Center,
+			titleStyle.Render(" UPDATE AVAILABLE "),
+			"\n",
+			fmt.Sprintf("New version: %s", lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.updateVer)),
+			fmt.Sprintf("Current version: %s", AppVersion),
+			"\n",
+			subTextStyle.Render("Download and install now? (y/n)"), // FIXED: Used subTextStyle
+		)
+		return centerContent(boxStyle.Render(ui))
 
 	case StateUpdating:
-		return appStyle.Render(fmt.Sprintf(
-			"\n   %s Downloading update...\n\n   %s",
-			m.spinner.View(),
-			dirStyle.Render("Please wait, the app will restart automatically (or close)"),
-		))
+		ui := lipgloss.JoinVertical(lipgloss.Center,
+			m.spinner.View()+" Updating...",
+			"\n",
+			subTextStyle.Render("Application will restart automatically"), // FIXED: Used subTextStyle
+		)
+		return centerContent(boxStyle.Render(ui))
 
 	case StateConfig:
-		return appStyle.Render(fmt.Sprintf(
-			"%s\n\n"+
-				"Enter working directory to scan (recursively):\n\n%s\n\n"+
-				"%s",
-			titleStyle.Render("PLCnext Launcher Configuration"),
+		ui := lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render(" CONFIGURATION "),
+			"\n",
+			lipgloss.NewStyle().Foreground(textColor).Render("Enter project directory path:"),
 			m.textInput.View(),
-			dirStyle.Render("(Press Enter to confirm, Ctrl+C to quit)"),
-		))
+			"\n",
+			subTextStyle.Render("Press Enter to scan"), // FIXED: Used subTextStyle
+		)
+		return centerContent(boxStyle.Render(ui))
 
 	case StateList:
-		return appStyle.Render(m.list.View())
+		// Adding a footer with status
+		status := fmt.Sprintf("Ver: %s | Projects: %d | 'c': config | 'q': quit", AppVersion, len(m.list.Items()))
+		statusView := lipgloss.NewStyle().
+			Foreground(subTextColor).
+			Width(m.width - 4).
+			Align(lipgloss.Right).
+			Render(status)
+
+		return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.list.View(),
+			statusView,
+		))
 
 	case StateLaunching:
-		return appStyle.Render(fmt.Sprintf(
-			"\n   %s Launching %s...\n\n   %s\n   Path: %s",
-			m.spinner.View(),
-			verStyle.Render(m.selectedPrj.Name),
-			dirStyle.Render("Checking versions and preparing environment..."),
-			m.selectedPrj.Path,
-		))
+		info := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.selectedPrj.Name)
+		ver := lipgloss.NewStyle().Foreground(subTextColor).Render("v" + m.selectedPrj.Version)
+
+		ui := lipgloss.JoinVertical(lipgloss.Center,
+			m.spinner.View()+" Launching Environment",
+			"\n",
+			info,
+			ver,
+			"\n",
+			lipgloss.NewStyle().Italic(true).Foreground(subTextColor).Render("Checking processes..."),
+		)
+		return centerContent(boxStyle.Render(ui))
 
 	case StateSuccess:
-		return appStyle.Render(fmt.Sprintf("\n%s\n\n%s", statusMessageStyle("Done!"), m.logMsg))
+		ui := lipgloss.JoinVertical(lipgloss.Center,
+			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("✔ SUCCESS"),
+			"\n",
+			m.logMsg,
+		)
+		return centerContent(boxStyle.Render(ui))
 
 	case StateError:
-		return appStyle.Render(fmt.Sprintf(
-			"\n%s\n\n%v\n\n%s",
-			errorMessageStyle("Error Occurred"),
-			m.err,
-			dirStyle.Render("Press any key to return to list"),
-		))
+		ui := lipgloss.JoinVertical(lipgloss.Center,
+			lipgloss.NewStyle().Foreground(errorColor).Bold(true).Render("✖ ERROR"),
+			"\n",
+			lipgloss.NewStyle().Width(50).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
+			"\n",
+			subTextStyle.Render("Press any key to return"), // FIXED: Used subTextStyle
+		)
+		return centerContent(boxStyle.Render(ui))
 	}
 
 	return ""
 }
 
-func (m model) configVersionView() string {
-	if AppVersion == "" {
-		return "dev"
-	}
-	return AppVersion
-}
-
 // ======================================================================================
-// LAUNCH COMMANDS
+// LAUNCH COMMANDS (UNCHANGED)
 // ======================================================================================
 
 type launchResultMsg struct {
@@ -768,7 +791,6 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 		WriteLog("Starting launch sequence for: " + proj.Name)
 
 		launchPath := proj.Path
-
 		targetVer := proj.Version
 		WriteLog("Project version detected: " + targetVer)
 
@@ -781,7 +803,6 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
-
 			if len(keys) > 0 {
 				idePath = installed[keys[len(keys)-1]]
 				WriteLog(fmt.Sprintf("Exact version %s not found. Using latest available: %s", targetVer, idePath))
@@ -811,7 +832,6 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 		}
 
 		WriteLog(fmt.Sprintf("Executing: %s \"%s\"", idePath, launchPath))
-
 		cmd := exec.Command(idePath, launchPath)
 		if err := cmd.Start(); err != nil {
 			WriteLog(fmt.Sprintf("Launch error: %v", err))
@@ -823,20 +843,18 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 }
 
 // ======================================================================================
-// CONFIG UTILS
+// CONFIG UTILS (UNCHANGED)
 // ======================================================================================
 
 func loadConfig() (Config, error) {
 	var cfg Config
 	exePath, _ := os.Executable()
 	configPath := filepath.Join(filepath.Dir(exePath), ConfigFileName)
-
 	file, err := os.Open(configPath)
 	if err != nil {
 		return cfg, err
 	}
 	defer file.Close()
-
 	decoder := json.NewDecoder(file)
 	err = decoder.Decode(&cfg)
 	return cfg, err
@@ -845,13 +863,11 @@ func loadConfig() (Config, error) {
 func saveConfig(cfg Config) error {
 	exePath, _ := os.Executable()
 	configPath := filepath.Join(filepath.Dir(exePath), ConfigFileName)
-
 	file, err := os.Create(configPath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(cfg)
