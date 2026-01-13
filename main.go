@@ -169,6 +169,39 @@ func doUpdate(url string) error {
 	return nil
 }
 
+// cleanupOldVersion удаляет файл .old, оставшийся после обновления
+func cleanupOldVersion() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	oldExe := exe + ".old"
+	// Проверяем, существует ли старый файл
+	if _, err := os.Stat(oldExe); err == nil {
+		// Пытаемся удалить. Ошибки игнорируем (например, если файл все еще занят),
+		// удалится при следующем запуске.
+		_ = os.Remove(oldExe)
+	}
+}
+
+// restartApp перезапускает текущее приложение
+func restartApp() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		WriteLog(fmt.Sprintf("Failed to restart: %v", err))
+		return
+	}
+	os.Exit(0)
+}
+
 // ======================================================================================
 // BUSINESS LOGIC (UNCHANGED)
 // ======================================================================================
@@ -585,6 +618,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Обработка клавиши R только в состоянии Success
+		if m.state == StateSuccess && (msg.String() == "r" || msg.String() == "R") {
+			restartApp()
+			return m, tea.Quit // На всякий случай, хотя restartApp делает Exit
+		}
+
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -703,7 +742,7 @@ func (m model) View() string {
 			fmt.Sprintf("New version: %s", lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.updateVer)),
 			fmt.Sprintf("Current version: %s", AppVersion),
 			"\n",
-			subTextStyle.Render("Download and install now? (y/n)"), // FIXED: Used subTextStyle
+			subTextStyle.Render("Download and install now? (y/n)"),
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -711,7 +750,7 @@ func (m model) View() string {
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			m.spinner.View()+" Updating...",
 			"\n",
-			subTextStyle.Render("Application will restart automatically"), // FIXED: Used subTextStyle
+			subTextStyle.Render("Application will restart automatically"),
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -722,7 +761,7 @@ func (m model) View() string {
 			lipgloss.NewStyle().Foreground(textColor).Render("Enter project directory path:"),
 			m.textInput.View(),
 			"\n",
-			subTextStyle.Render("Press Enter to scan"), // FIXED: Used subTextStyle
+			subTextStyle.Render("Press Enter to scan"),
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -755,10 +794,22 @@ func (m model) View() string {
 		return centerContent(boxStyle.Render(ui))
 
 	case StateSuccess:
+		// Check if message is about update or launch
+		isUpdate := strings.Contains(m.logMsg, "Update successful")
+
+		var helpText string
+		if isUpdate {
+			helpText = subTextStyle.Render("Press 'R' to restart now")
+		} else {
+			helpText = ""
+		}
+
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("✔ SUCCESS"),
 			"\n",
 			m.logMsg,
+			"\n",
+			helpText,
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -768,7 +819,7 @@ func (m model) View() string {
 			"\n",
 			lipgloss.NewStyle().Width(50).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
 			"\n",
-			subTextStyle.Render("Press any key to return"), // FIXED: Used subTextStyle
+			subTextStyle.Render("Press any key to return"),
 		)
 		return centerContent(boxStyle.Render(ui))
 	}
@@ -874,6 +925,9 @@ func saveConfig(cfg Config) error {
 }
 
 func main() {
+	// 1. Попытка удалить старый файл версии (.old)
+	cleanupOldVersion()
+
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
