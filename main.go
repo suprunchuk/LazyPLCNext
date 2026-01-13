@@ -71,6 +71,10 @@ var (
 	itemDescStyle = lipgloss.NewStyle().
 			Foreground(subTextColor)
 
+	versionStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+
 	selectedItemStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder(), false, false, false, true).
 				BorderForeground(primaryColor).
@@ -170,7 +174,6 @@ func doUpdate(url string) error {
 	return nil
 }
 
-// cleanupOldVersion удаляет файл .old, оставшийся после обновления
 func cleanupOldVersion() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -182,7 +185,6 @@ func cleanupOldVersion() {
 	}
 }
 
-// restartApp перезапускает текущее приложение
 func restartApp() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -314,7 +316,6 @@ func extractVersionFromFolder(folderPath string) string {
 	return "Unknown"
 }
 
-// ScanProjects scans the directory.
 func ScanProjects(root string) []ProjectInfo {
 	var projects []ProjectInfo
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -326,14 +327,10 @@ func ScanProjects(root string) []ProjectInfo {
 			if strings.HasPrefix(name, ".") || name == "bin" || name == "obj" {
 				return filepath.SkipDir
 			}
-			// Flat folder project
 			if _, err := os.Stat(filepath.Join(path, "Solution.xml")); err == nil {
 				ver := extractVersionFromFolder(path)
 				projects = append(projects, ProjectInfo{
-					Name:    d.Name(), // Uses folder name
-					Path:    path,
-					Type:    TypeFlat,
-					Version: ver,
+					Name: d.Name(), Path: path, Type: TypeFlat, Version: ver,
 				})
 				return filepath.SkipDir
 			}
@@ -343,25 +340,20 @@ func ScanProjects(root string) []ProjectInfo {
 		name := d.Name()
 		lowerName := strings.ToLower(name)
 
-		// .pcwex Archive
+		// PCWEX
 		if strings.HasSuffix(lowerName, ".pcwex") {
 			ver, _ := extractVersionFromZip(path)
 			if ver == "" {
 				ver = "Unknown"
 			}
-			// Use parent directory name instead of filename
 			parentDir := filepath.Base(filepath.Dir(path))
-
 			projects = append(projects, ProjectInfo{
-				Name:    parentDir,
-				Path:    path,
-				Type:    TypePCWEX,
-				Version: ver,
+				Name: parentDir, Path: path, Type: TypePCWEX, Version: ver,
 			})
 			return nil
 		}
 
-		// .pcwef Launcher File
+		// PCWEF
 		if strings.HasSuffix(lowerName, ".pcwef") {
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			flatFolder := filepath.Join(filepath.Dir(path), baseName+"Flat")
@@ -369,16 +361,9 @@ func ScanProjects(root string) []ProjectInfo {
 			if _, err := os.Stat(flatFolder); err == nil {
 				ver = extractVersionFromFolder(flatFolder)
 			}
-
-			// Use parent directory name instead of filename
 			parentDir := filepath.Base(filepath.Dir(path))
-
 			projects = append(projects, ProjectInfo{
-				Name:    parentDir,
-				Path:    path,
-				Type:    TypePCWEF,
-				Version: ver,
-				IsPCWEF: true,
+				Name: parentDir, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true,
 			})
 			return nil
 		}
@@ -432,7 +417,7 @@ func GetRunningIDE(targetVer string) (string, int32, bool) {
 }
 
 // ======================================================================================
-// UI: CUSTOM LIST DELEGATE (IMPROVED)
+// UI: CUSTOM LIST DELEGATE
 // ======================================================================================
 
 type projectDelegate struct{}
@@ -446,21 +431,22 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		return
 	}
 
-	// Icons for cleaner look
-	icon := "📦" // PCWEX
+	icon := "📦"
 	typeStr := "ARCHIVE"
 	switch p.Type {
 	case TypeFlat:
-		icon = "📂" // Folder
+		icon = "📂"
 		typeStr = "FOLDER"
 	case TypePCWEF:
-		icon = "🔗" // Shortcut
+		icon = "🔗"
 		typeStr = "LINK"
 	}
 
 	name := p.Name
-	ver := fmt.Sprintf("v%s", p.Version)
-	meta := fmt.Sprintf("%s • %s", typeStr, ver)
+
+	verStr := versionStyle.Render(fmt.Sprintf("v%s", p.Version))
+
+	meta := fmt.Sprintf("%s • %s", typeStr, verStr)
 	path := p.Path
 
 	var (
@@ -564,7 +550,6 @@ func (m *model) reloadList() {
 		items[i] = p
 	}
 
-	// Customize the list appearance
 	delegate := projectDelegate{}
 	l := list.New(items, delegate, 0, 0)
 	l.Title = "PLCnext Projects"
@@ -572,7 +557,6 @@ func (m *model) reloadList() {
 	l.Styles.Title = titleStyle
 	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
 
-	// Status bar / help keys
 	l.AdditionalFullHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change path")),
@@ -583,7 +567,7 @@ func (m *model) reloadList() {
 	m.list = l
 	m.state = StateList
 	if m.width > 0 {
-		m.list.SetSize(m.width, m.height-2) // Reserve space for borders/footer
+		m.list.SetSize(m.width, m.height-2)
 	}
 }
 
@@ -620,7 +604,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		docStyle = docStyle.MaxWidth(m.width).MaxHeight(m.height)
 		if m.state == StateList {
-			m.list.SetSize(msg.Width-4, msg.Height-4) // Adjust for margins
+			m.list.SetSize(msg.Width-4, msg.Height-4)
 		}
 
 	case updateCheckMsg:
@@ -648,7 +632,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-		// Allow quitting from list with Q if not filtering
 		if m.state == StateList && msg.String() == "q" && m.list.FilterState() != list.Filtering {
 			return m, tea.Quit
 		}
@@ -674,9 +657,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, spinCmd
 
 	case StateConfig:
-		// Добавляем обработку Esc для выхода без сохранения
 		if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
-			// Если уже есть конфиг, возвращаемся в список
 			if len(m.config.WorkDirs) > 0 {
 				m.state = StateList
 				return m, nil
@@ -706,13 +687,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.list.FilterState() != list.Filtering {
 				if key.String() == "c" {
 					m.state = StateConfig
-					// Предустанавливаем текущий путь, если он есть
 					currentPath := ""
 					if len(m.config.WorkDirs) > 0 {
 						currentPath = m.config.WorkDirs[0]
 					}
 					m.textInput.SetValue(currentPath)
-					m.textInput.CursorEnd() // Ставим курсор в конец
+					m.textInput.CursorEnd()
 					m.textInput.Focus()
 					return m, nil
 				}
@@ -759,11 +739,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // ======================================================================================
-// VIEW (THE PRETTY PART)
+// VIEW
 // ======================================================================================
 
 func (m model) View() string {
-	// Center content helper
 	centerContent := func(content string) string {
 		return lipgloss.Place(m.width, m.height,
 			lipgloss.Center, lipgloss.Center,
@@ -797,12 +776,11 @@ func (m model) View() string {
 			lipgloss.NewStyle().Foreground(textColor).Render("Enter project directory path:"),
 			m.textInput.View(),
 			"\n",
-			subTextStyle.Render("Press Enter to scan • Esc to cancel"), // Обновили подсказку
+			subTextStyle.Render("Press Enter to scan • Esc to cancel"),
 		)
 		return centerContent(boxStyle.Render(ui))
 
 	case StateList:
-		// Adding a footer with status
 		status := fmt.Sprintf("Ver: %s | Projects: %d | 'c': config | 'q': quit", AppVersion, len(m.list.Items()))
 		statusView := lipgloss.NewStyle().
 			Foreground(subTextColor).
@@ -817,7 +795,8 @@ func (m model) View() string {
 
 	case StateLaunching:
 		info := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.selectedPrj.Name)
-		ver := lipgloss.NewStyle().Foreground(subTextColor).Render("v" + m.selectedPrj.Version)
+		// Highlight version here too for consistency
+		ver := versionStyle.Render("v" + m.selectedPrj.Version)
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			m.spinner.View()+" Launching Environment",
@@ -830,7 +809,6 @@ func (m model) View() string {
 		return centerContent(boxStyle.Render(ui))
 
 	case StateSuccess:
-		// Check if message is about update or launch
 		isUpdate := strings.Contains(m.logMsg, "Update successful")
 
 		var helpText string
@@ -917,7 +895,7 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 }
 
 // ======================================================================================
-// CONFIG UTILS (UNCHANGED)
+// CONFIG UTILS
 // ======================================================================================
 
 func loadConfig() (Config, error) {
