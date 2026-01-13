@@ -32,14 +32,15 @@ import (
 // ======================================================================================
 
 const (
-	ConfigFileName = "launcher_config.json"
-	LogFileName    = "plcnext_launcher.log"
-	IDEBasePath    = `C:\Program Files\PHOENIX CONTACT`
-	RepoOwner      = "suprunchuk"
-	RepoName       = "LazyPLCNext"
+	ConfigFileName      = "launcher_config.json"
+	LogFileName         = "plcnext_launcher.log"
+	IDEBasePath         = `C:\Program Files\PHOENIX CONTACT`
+	RepoOwner           = "suprunchuk"
+	RepoName            = "LazyPLCNext"
+	UpdateCheckInterval = time.Minute * 1
 )
 
-var AppVersion = "dev"
+var AppVersion = "v1.0.4-fix-autoupdate"
 
 // --- THEME & STYLES ---
 
@@ -338,16 +339,12 @@ func extractVersionFromFolder(folderPath string) string {
 	return "Unknown"
 }
 
-// getGitBranch attempts to find the current git branch for a given directory.
-// It recursively checks the directory and its parents (up to 3 levels) for a .git folder.
 func getGitBranch(startPath string) string {
 	dir := startPath
-	// If it's a file, get dir
 	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
 		dir = filepath.Dir(dir)
 	}
 
-	// Helper to run git command
 	runGit := func(d string) string {
 		cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 		cmd.Dir = d
@@ -359,7 +356,6 @@ func getGitBranch(startPath string) string {
 		return ""
 	}
 
-	// Walk up 3 levels maximum to find .git
 	for i := 0; i < 3; i++ {
 		gitDir := filepath.Join(dir, ".git")
 		if _, err := os.Stat(gitDir); err == nil {
@@ -399,7 +395,6 @@ func ScanProjects(root string) []ProjectInfo {
 		name := d.Name()
 		lowerName := strings.ToLower(name)
 
-		// PCWEX
 		if strings.HasSuffix(lowerName, ".pcwex") {
 			ver, _ := extractVersionFromZip(path)
 			if ver == "" {
@@ -413,7 +408,6 @@ func ScanProjects(root string) []ProjectInfo {
 			return nil
 		}
 
-		// PCWEF
 		if strings.HasSuffix(lowerName, ".pcwef") {
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			flatFolder := filepath.Join(filepath.Dir(path), baseName+"Flat")
@@ -505,24 +499,19 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		typeLabel = "PCWEF"
 	}
 
-	// Badges Rendering
 	verBadge := verBadgeStyle.Render(fmt.Sprintf("v%s", p.Version))
 	typeBadge := typeBadgeStyle.Render(typeLabel)
 
 	var gitBadge string
 	if p.GitBranch != "" {
-		// Truncate branch if too long
 		bName := p.GitBranch
 		if len(bName) > 15 {
 			bName = bName[:12] + "..."
 		}
-
-		// Check preference for icon
 		gitIcon := ""
 		if d.UseNerdFonts {
-			gitIcon = " " // Nerd Font glyph
+			gitIcon = " "
 		}
-
 		gitBadge = gitBadgeStyle.Render(gitIcon + bName)
 	}
 
@@ -531,29 +520,23 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		descRes  string
 	)
 
-	// Path truncation for nicer UI
 	displayPath := p.Path
 	if len(displayPath) > 60 {
 		displayPath = "..." + displayPath[len(displayPath)-57:]
 	}
 
 	if index == m.Index() {
-		// Selected State
 		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
-		// Join badges horizontally
 		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
 		descRes = selectedItemStyle.Copy().UnsetBorderStyle().Render(
 			fmt.Sprintf("%s\n%s", badges, displayPath),
 		)
 	} else {
-		// Normal State
 		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
 		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
 		descRes = fmt.Sprintf("   %s\n   %s", badges, itemDescStyle.Render(displayPath))
 	}
 
-	// Adjust spacing/newlines manually since list delegate expects specific height
-	// We are cheating a bit on Height(), effectively rendering 2 visual lines plus padding
 	fmt.Fprint(w, titleRes+"\n"+descRes)
 }
 
@@ -626,7 +609,6 @@ func (m *model) reloadList() {
 	projects := ScanProjects(m.config.WorkDirs[0])
 
 	sort.Slice(projects, func(i, j int) bool {
-		// Sort by Type then Name
 		if projects[i].Type == TypeFlat && projects[j].Type != TypeFlat {
 			return true
 		}
@@ -662,6 +644,8 @@ func (m *model) reloadList() {
 	}
 }
 
+type tickMsg time.Time
+
 type updateCheckMsg struct {
 	version string
 	url     string
@@ -676,6 +660,12 @@ func checkUpdateCmd() tea.Cmd {
 	}
 }
 
+func waitForNextUpdateCheck() tea.Cmd {
+	return tea.Tick(UpdateCheckInterval, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
 func performUpdateCmd(url string) tea.Cmd {
 	return func() tea.Msg {
 		err := doUpdate(url)
@@ -684,7 +674,11 @@ func performUpdateCmd(url string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, checkUpdateCmd())
+	return tea.Batch(
+		textinput.Blink,
+		checkUpdateCmd(),
+		waitForNextUpdateCheck(),
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -698,11 +692,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetSize(msg.Width-4, msg.Height-4)
 		}
 
+	case tickMsg:
+		return m, tea.Batch(checkUpdateCmd(), waitForNextUpdateCheck())
+
 	case updateCheckMsg:
 		if msg.err == nil && msg.version != "" {
-			m.updateVer = msg.version
-			m.updateURL = msg.url
-			m.state = StateUpdateFound
+			if m.state != StateLaunching && m.state != StateUpdating && m.state != StateUpdateFound {
+				m.updateVer = msg.version
+				m.updateURL = msg.url
+				m.state = StateUpdateFound
+			}
 		}
 
 	case updateDoneMsg:
@@ -718,7 +717,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-		// Allow quitting from list if no filter active
 		if m.state == StateList && msg.String() == "q" && m.list.FilterState() != list.Filtering {
 			return m, tea.Quit
 		}
@@ -895,7 +893,7 @@ func (m model) View() string {
 
 		branchInfo := ""
 		if m.selectedPrj.GitBranch != "" {
-			gitIcon := "" // Default safe icon
+			gitIcon := ""
 			if m.config.UseNerdFonts {
 				gitIcon = " "
 			}
