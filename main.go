@@ -116,7 +116,8 @@ var (
 // ======================================================================================
 
 type Config struct {
-	WorkDirs []string `json:"work_dirs"`
+	WorkDirs     []string `json:"work_dirs"`
+	UseNerdFonts bool     `json:"use_nerd_fonts"`
 }
 
 type ProjectType int
@@ -480,7 +481,9 @@ func GetRunningIDE(targetVer string) (string, int32, bool) {
 // UI: CUSTOM LIST DELEGATE
 // ======================================================================================
 
-type projectDelegate struct{}
+type projectDelegate struct {
+	UseNerdFonts bool
+}
 
 func (d projectDelegate) Height() int                             { return 2 }
 func (d projectDelegate) Spacing() int                            { return 1 }
@@ -513,7 +516,14 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		if len(bName) > 15 {
 			bName = bName[:12] + "..."
 		}
-		gitBadge = gitBadgeStyle.Render(" " + bName)
+
+		// Check preference for icon
+		gitIcon := ""
+		if d.UseNerdFonts {
+			gitIcon = " " // Nerd Font glyph
+		}
+
+		gitBadge = gitBadgeStyle.Render(gitIcon + bName)
 	}
 
 	var (
@@ -631,7 +641,7 @@ func (m *model) reloadList() {
 		items[i] = p
 	}
 
-	delegate := projectDelegate{}
+	delegate := projectDelegate{UseNerdFonts: m.config.UseNerdFonts}
 	l := list.New(items, delegate, 0, 0)
 	l.Title = "PLCnext Projects"
 	l.SetShowHelp(false)
@@ -759,7 +769,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			path := strings.TrimSpace(m.textInput.Value())
 			if path != "" {
 				if info, err := os.Stat(path); err == nil && info.IsDir() {
-					m.config = Config{WorkDirs: []string{path}}
+					m.config.WorkDirs = []string{path}
 					saveConfig(m.config)
 					m.reloadList()
 					return m, nil
@@ -885,7 +895,11 @@ func (m model) View() string {
 
 		branchInfo := ""
 		if m.selectedPrj.GitBranch != "" {
-			branchInfo = gitBadgeStyle.Render(" " + m.selectedPrj.GitBranch)
+			gitIcon := "" // Default safe icon
+			if m.config.UseNerdFonts {
+				gitIcon = " "
+			}
+			branchInfo = gitBadgeStyle.Render(gitIcon + m.selectedPrj.GitBranch)
 		}
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
