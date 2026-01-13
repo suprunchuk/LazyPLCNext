@@ -624,16 +624,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		if m.state == StateSuccess && (msg.String() == "r" || msg.String() == "R") {
-			restartApp()
-			return m, tea.Quit
-		}
-
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		// Allow quitting from list if no filter active
 		if m.state == StateList && msg.String() == "q" && m.list.FilterState() != list.Filtering {
 			return m, tea.Quit
+		}
+
+		if m.state == StateSuccess {
+			// Special handling for restart after update
+			if strings.Contains(m.logMsg, "Update successful") && (msg.String() == "r" || msg.String() == "R") {
+				restartApp()
+				return m, tea.Quit
+			}
+			switch msg.String() {
+			case "esc", "enter", "q", " ":
+				m.state = StateList
+				return m, nil
+			}
 		}
 	}
 
@@ -719,9 +728,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.logMsg = res.message
 				m.state = StateSuccess
-			}
-			if m.state == StateSuccess {
-				return m, tea.Quit
 			}
 		}
 		return m, spinCmd
@@ -815,7 +821,7 @@ func (m model) View() string {
 		if isUpdate {
 			helpText = subTextStyle.Render("Press 'R' to restart now")
 		} else {
-			helpText = ""
+			helpText = subTextStyle.Render("Press Enter or Esc to return to list")
 		}
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
