@@ -839,7 +839,7 @@ func (m model) View() string {
 }
 
 // ======================================================================================
-// LAUNCH COMMANDS (UNCHANGED)
+// LAUNCH COMMANDS
 // ======================================================================================
 
 type launchResultMsg struct {
@@ -878,19 +878,6 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 		_, pid, isRunning := GetRunningIDE(targetVer)
 		if isRunning {
 			WriteLog(fmt.Sprintf("Target IDE version is already running (PID: %d).", pid))
-		} else {
-			procs, _ := process.Processes()
-			for _, p := range procs {
-				name, _ := p.Name()
-				if strings.Contains(name, "PLCNENG64") || strings.Contains(name, "PLCnextEngineer") {
-					exe, _ := p.Exe()
-					if exe != idePath {
-						WriteLog(fmt.Sprintf("Closing mismatching IDE version (PID: %d, Path: %s)", p.Pid, exe))
-						p.Kill()
-					}
-				}
-			}
-			time.Sleep(500 * time.Millisecond)
 		}
 
 		WriteLog(fmt.Sprintf("Executing: %s \"%s\"", idePath, launchPath))
