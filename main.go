@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -43,53 +44,71 @@ var AppVersion = "dev"
 // --- THEME & STYLES ---
 
 var (
-	// Colors
-	primaryColor   = lipgloss.Color("#25A065") // Phoenix Green
-	secondaryColor = lipgloss.Color("#006E53") // Darker Green
-	accentColor    = lipgloss.Color("#EFB335") // Warning/Accent Yellow
-	textColor      = lipgloss.Color("#FAFAFA")
-	subTextColor   = lipgloss.Color("#787878")
-	errorColor     = lipgloss.Color("#FF453A")
+	// Colors Palette
+	colPrimary   = lipgloss.Color("#25A065") // Phoenix Green
+	colSecondary = lipgloss.Color("#006E53") // Darker Green
+	colAccent    = lipgloss.Color("#EFB335") // Warning/Accent Yellow
+	colText      = lipgloss.Color("#FAFAFA") // White-ish
+	colSubText   = lipgloss.Color("#6E6E6E") // Grey
+	colError     = lipgloss.Color("#FF453A") // Red
+	colGit       = lipgloss.Color("#F05133") // Git Orange
+	colPath      = lipgloss.Color("#4A4A4A") // Dark Grey for paths
 
 	// Base Styles
 	docStyle = lipgloss.NewStyle().Margin(1, 2)
 
 	// Text Styles
-	subTextStyle = lipgloss.NewStyle().Foreground(subTextColor)
+	subTextStyle = lipgloss.NewStyle().Foreground(colSubText)
 
 	// List Styles
 	titleStyle = lipgloss.NewStyle().
-			Foreground(textColor).
-			Background(secondaryColor).
+			Foreground(colText).
+			Background(colSecondary).
 			Padding(0, 1).
 			Bold(true)
 
+	// Item Styles
 	itemTitleStyle = lipgloss.NewStyle().
-			Foreground(textColor).
+			Foreground(colText).
 			Bold(true)
 
 	itemDescStyle = lipgloss.NewStyle().
-			Foreground(subTextColor)
+			Foreground(colPath)
 
-	versionStyle = lipgloss.NewStyle().
-			Foreground(accentColor).
+	// Badges Styles
+	badgeStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			MarginRight(1).
 			Bold(true)
 
+	verBadgeStyle = badgeStyle.Copy().
+			Foreground(lipgloss.Color("#000000")).
+			Background(colAccent)
+
+	gitBadgeStyle = badgeStyle.Copy().
+			Foreground(colText).
+			Background(colGit)
+
+	typeBadgeStyle = badgeStyle.Copy().
+			Foreground(colText).
+			Background(colSecondary)
+
+	// Selected Item
 	selectedItemStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(primaryColor).
-				Foreground(primaryColor).
+				Border(lipgloss.ThickBorder(), false, false, false, true).
+				BorderForeground(colPrimary).
+				Foreground(colPrimary).
 				Padding(0, 0, 0, 1).
 				Bold(true)
 
 	// Box/Panel Styles
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(primaryColor).
+			BorderForeground(colPrimary).
 			Padding(1, 2)
 
 	focusedInputStyle = lipgloss.NewStyle().
-				Foreground(primaryColor)
+				Foreground(colPrimary)
 )
 
 // ======================================================================================
@@ -110,11 +129,12 @@ const (
 )
 
 type ProjectInfo struct {
-	Name    string
-	Path    string
-	Type    ProjectType
-	Version string
-	IsPCWEF bool
+	Name      string
+	Path      string
+	Type      ProjectType
+	Version   string
+	IsPCWEF   bool
+	GitBranch string // New field for Git Branch
 }
 
 // Implement list.Item interface
@@ -139,7 +159,8 @@ func checkUpdate() (string, string, error) {
 		return "", "", nil
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", RepoOwner, RepoName)
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", "", err
 	}
@@ -316,6 +337,42 @@ func extractVersionFromFolder(folderPath string) string {
 	return "Unknown"
 }
 
+// getGitBranch attempts to find the current git branch for a given directory.
+// It recursively checks the directory and its parents (up to 3 levels) for a .git folder.
+func getGitBranch(startPath string) string {
+	dir := startPath
+	// If it's a file, get dir
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		dir = filepath.Dir(dir)
+	}
+
+	// Helper to run git command
+	runGit := func(d string) string {
+		cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+		cmd.Dir = d
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err == nil {
+			return strings.TrimSpace(out.String())
+		}
+		return ""
+	}
+
+	// Walk up 3 levels maximum to find .git
+	for i := 0; i < 3; i++ {
+		gitDir := filepath.Join(dir, ".git")
+		if _, err := os.Stat(gitDir); err == nil {
+			return runGit(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
 func ScanProjects(root string) []ProjectInfo {
 	var projects []ProjectInfo
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -329,8 +386,9 @@ func ScanProjects(root string) []ProjectInfo {
 			}
 			if _, err := os.Stat(filepath.Join(path, "Solution.xml")); err == nil {
 				ver := extractVersionFromFolder(path)
+				branch := getGitBranch(path)
 				projects = append(projects, ProjectInfo{
-					Name: d.Name(), Path: path, Type: TypeFlat, Version: ver,
+					Name: d.Name(), Path: path, Type: TypeFlat, Version: ver, GitBranch: branch,
 				})
 				return filepath.SkipDir
 			}
@@ -346,9 +404,10 @@ func ScanProjects(root string) []ProjectInfo {
 			if ver == "" {
 				ver = "Unknown"
 			}
-			parentDir := filepath.Base(filepath.Dir(path))
+			parentDir := filepath.Dir(path)
+			branch := getGitBranch(parentDir)
 			projects = append(projects, ProjectInfo{
-				Name: parentDir, Path: path, Type: TypePCWEX, Version: ver,
+				Name: filepath.Base(parentDir), Path: path, Type: TypePCWEX, Version: ver, GitBranch: branch,
 			})
 			return nil
 		}
@@ -361,9 +420,10 @@ func ScanProjects(root string) []ProjectInfo {
 			if _, err := os.Stat(flatFolder); err == nil {
 				ver = extractVersionFromFolder(flatFolder)
 			}
-			parentDir := filepath.Base(filepath.Dir(path))
+			parentDir := filepath.Dir(path)
+			branch := getGitBranch(parentDir)
 			projects = append(projects, ProjectInfo{
-				Name: parentDir, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true,
+				Name: filepath.Base(parentDir), Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
 			})
 			return nil
 		}
@@ -432,38 +492,58 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 	}
 
 	icon := "📦"
-	typeStr := "ARCHIVE"
+	typeLabel := "PCWEX"
 	switch p.Type {
 	case TypeFlat:
 		icon = "📂"
-		typeStr = "FOLDER"
+		typeLabel = "DIR"
 	case TypePCWEF:
 		icon = "🔗"
-		typeStr = "LINK"
+		typeLabel = "PCWEF"
 	}
 
-	name := p.Name
+	// Badges Rendering
+	verBadge := verBadgeStyle.Render(fmt.Sprintf("v%s", p.Version))
+	typeBadge := typeBadgeStyle.Render(typeLabel)
 
-	verStr := versionStyle.Render(fmt.Sprintf("v%s", p.Version))
-
-	meta := fmt.Sprintf("%s • %s", typeStr, verStr)
-	path := p.Path
+	var gitBadge string
+	if p.GitBranch != "" {
+		// Truncate branch if too long
+		bName := p.GitBranch
+		if len(bName) > 15 {
+			bName = bName[:12] + "..."
+		}
+		gitBadge = gitBadgeStyle.Render(" " + bName)
+	}
 
 	var (
 		titleRes string
 		descRes  string
 	)
 
-	if index == m.Index() {
-		// Selected State
-		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, name))
-		descRes = selectedItemStyle.Copy().UnsetBorderStyle().Render(fmt.Sprintf("%s | %s", meta, path))
-	} else {
-		// Normal State
-		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, name))
-		descRes = itemDescStyle.Render(fmt.Sprintf("%s | %s", meta, path))
+	// Path truncation for nicer UI
+	displayPath := p.Path
+	if len(displayPath) > 60 {
+		displayPath = "..." + displayPath[len(displayPath)-57:]
 	}
 
+	if index == m.Index() {
+		// Selected State
+		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
+		// Join badges horizontally
+		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
+		descRes = selectedItemStyle.Copy().UnsetBorderStyle().Render(
+			fmt.Sprintf("%s\n%s", badges, displayPath),
+		)
+	} else {
+		// Normal State
+		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
+		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
+		descRes = fmt.Sprintf("   %s\n   %s", badges, itemDescStyle.Render(displayPath))
+	}
+
+	// Adjust spacing/newlines manually since list delegate expects specific height
+	// We are cheating a bit on Height(), effectively rendering 2 visual lines plus padding
 	fmt.Fprint(w, titleRes+"\n"+descRes)
 }
 
@@ -509,7 +589,7 @@ func initialModel() model {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
+	sp.Style = lipgloss.NewStyle().Foreground(colPrimary)
 
 	m := model{
 		state:     StateConfig,
@@ -536,13 +616,14 @@ func (m *model) reloadList() {
 	projects := ScanProjects(m.config.WorkDirs[0])
 
 	sort.Slice(projects, func(i, j int) bool {
+		// Sort by Type then Name
 		if projects[i].Type == TypeFlat && projects[j].Type != TypeFlat {
 			return true
 		}
 		if projects[i].Type != TypeFlat && projects[j].Type == TypeFlat {
 			return false
 		}
-		return projects[i].Name < projects[j].Name
+		return strings.ToLower(projects[i].Name) < strings.ToLower(projects[j].Name)
 	})
 
 	items := make([]list.Item, len(projects))
@@ -633,7 +714,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.state == StateSuccess {
-			// Special handling for restart after update
 			if strings.Contains(m.logMsg, "Update successful") && (msg.String() == "r" || msg.String() == "R") {
 				restartApp()
 				return m, tea.Quit
@@ -760,7 +840,7 @@ func (m model) View() string {
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			titleStyle.Render(" UPDATE AVAILABLE "),
 			"\n",
-			fmt.Sprintf("New version: %s", lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.updateVer)),
+			fmt.Sprintf("New version: %s", lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.updateVer)),
 			fmt.Sprintf("Current version: %s", AppVersion),
 			"\n",
 			subTextStyle.Render("Download and install now? (y/n)"),
@@ -779,7 +859,7 @@ func (m model) View() string {
 		ui := lipgloss.JoinVertical(lipgloss.Left,
 			titleStyle.Render(" CONFIGURATION "),
 			"\n",
-			lipgloss.NewStyle().Foreground(textColor).Render("Enter project directory path:"),
+			lipgloss.NewStyle().Foreground(colText).Render("Enter project directory path:"),
 			m.textInput.View(),
 			"\n",
 			subTextStyle.Render("Press Enter to scan • Esc to cancel"),
@@ -789,7 +869,7 @@ func (m model) View() string {
 	case StateList:
 		status := fmt.Sprintf("Ver: %s | Projects: %d | 'c': config | 'q': quit", AppVersion, len(m.list.Items()))
 		statusView := lipgloss.NewStyle().
-			Foreground(subTextColor).
+			Foreground(colSubText).
 			Width(m.width - 4).
 			Align(lipgloss.Right).
 			Render(status)
@@ -800,17 +880,21 @@ func (m model) View() string {
 		))
 
 	case StateLaunching:
-		info := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(m.selectedPrj.Name)
-		// Highlight version here too for consistency
-		ver := versionStyle.Render("v" + m.selectedPrj.Version)
+		info := lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.selectedPrj.Name)
+		ver := verBadgeStyle.Render("v" + m.selectedPrj.Version)
+
+		branchInfo := ""
+		if m.selectedPrj.GitBranch != "" {
+			branchInfo = gitBadgeStyle.Render(" " + m.selectedPrj.GitBranch)
+		}
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			m.spinner.View()+" Launching Environment",
 			"\n",
 			info,
-			ver,
+			lipgloss.JoinHorizontal(lipgloss.Center, ver, branchInfo),
 			"\n",
-			lipgloss.NewStyle().Italic(true).Foreground(subTextColor).Render("Checking processes..."),
+			lipgloss.NewStyle().Italic(true).Foreground(colSubText).Render("Checking processes..."),
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -825,7 +909,7 @@ func (m model) View() string {
 		}
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
-			lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("✔ SUCCESS"),
+			lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render("✔ SUCCESS"),
 			"\n",
 			m.logMsg,
 			"\n",
@@ -835,7 +919,7 @@ func (m model) View() string {
 
 	case StateError:
 		ui := lipgloss.JoinVertical(lipgloss.Center,
-			lipgloss.NewStyle().Foreground(errorColor).Bold(true).Render("✖ ERROR"),
+			lipgloss.NewStyle().Foreground(colError).Bold(true).Render("✖ ERROR"),
 			"\n",
 			lipgloss.NewStyle().Width(50).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
 			"\n",
