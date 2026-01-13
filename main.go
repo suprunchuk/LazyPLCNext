@@ -75,7 +75,8 @@ var (
 				Border(lipgloss.NormalBorder(), false, false, false, true).
 				BorderForeground(primaryColor).
 				Foreground(primaryColor).
-				Padding(0, 0, 0, 1)
+				Padding(0, 0, 0, 1).
+				Bold(true)
 
 	// Box/Panel Styles
 	boxStyle = lipgloss.NewStyle().
@@ -200,7 +201,7 @@ func restartApp() {
 }
 
 // ======================================================================================
-// BUSINESS LOGIC (UNCHANGED)
+// BUSINESS LOGIC
 // ======================================================================================
 
 func WriteLog(msg string) {
@@ -313,6 +314,7 @@ func extractVersionFromFolder(folderPath string) string {
 	return "Unknown"
 }
 
+// ScanProjects scans the directory.
 func ScanProjects(root string) []ProjectInfo {
 	var projects []ProjectInfo
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -324,27 +326,42 @@ func ScanProjects(root string) []ProjectInfo {
 			if strings.HasPrefix(name, ".") || name == "bin" || name == "obj" {
 				return filepath.SkipDir
 			}
+			// Flat folder project
 			if _, err := os.Stat(filepath.Join(path, "Solution.xml")); err == nil {
 				ver := extractVersionFromFolder(path)
 				projects = append(projects, ProjectInfo{
-					Name: d.Name(), Path: path, Type: TypeFlat, Version: ver,
+					Name:    d.Name(), // Uses folder name
+					Path:    path,
+					Type:    TypeFlat,
+					Version: ver,
 				})
 				return filepath.SkipDir
 			}
 			return nil
 		}
+
 		name := d.Name()
 		lowerName := strings.ToLower(name)
+
+		// .pcwex Archive
 		if strings.HasSuffix(lowerName, ".pcwex") {
 			ver, _ := extractVersionFromZip(path)
 			if ver == "" {
 				ver = "Unknown"
 			}
+			// Use parent directory name instead of filename
+			parentDir := filepath.Base(filepath.Dir(path))
+
 			projects = append(projects, ProjectInfo{
-				Name: name, Path: path, Type: TypePCWEX, Version: ver,
+				Name:    parentDir,
+				Path:    path,
+				Type:    TypePCWEX,
+				Version: ver,
 			})
 			return nil
 		}
+
+		// .pcwef Launcher File
 		if strings.HasSuffix(lowerName, ".pcwef") {
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			flatFolder := filepath.Join(filepath.Dir(path), baseName+"Flat")
@@ -352,8 +369,16 @@ func ScanProjects(root string) []ProjectInfo {
 			if _, err := os.Stat(flatFolder); err == nil {
 				ver = extractVersionFromFolder(flatFolder)
 			}
+
+			// Use parent directory name instead of filename
+			parentDir := filepath.Base(filepath.Dir(path))
+
 			projects = append(projects, ProjectInfo{
-				Name: name, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true,
+				Name:    parentDir,
+				Path:    path,
+				Type:    TypePCWEF,
+				Version: ver,
+				IsPCWEF: true,
 			})
 			return nil
 		}
