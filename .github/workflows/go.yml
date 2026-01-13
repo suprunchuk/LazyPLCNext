@@ -1,0 +1,39 @@
+name: Build and Release Windows App
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.5'
+
+    - name: Get Version from Tag
+      id: get_version
+      shell: bash
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+    - name: Build Binary
+      run: |
+        GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.AppVersion=${{ env.VERSION }}" -o LazyPLCNext.exe main.go
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: LazyPLCNext.exe
+        name: Release ${{ env.VERSION }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

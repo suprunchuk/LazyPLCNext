@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,18 +22,25 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/minio/selfupdate"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
 // ======================================================================================
-// CONSTANTS & STYLES
+// CONFIG & CONSTANTS
 // ======================================================================================
 
 const (
 	ConfigFileName = "launcher_config.json"
 	LogFileName    = "plcnext_launcher.log"
 	IDEBasePath    = `C:\Program Files\PHOENIX CONTACT`
+	RepoOwner      = "suprunchuk"
+	RepoName       = "LazyPLCNext"
 )
+
+// AppVersion устанавливается автоматически через -ldflags при сборке в GitHub Actions
+// Если запуск локальный, будет значение "dev"
+var AppVersion = "dev"
 
 var (
 	appStyle = lipgloss.NewStyle().Margin(1, 2)
@@ -86,7 +94,70 @@ func (p ProjectInfo) Title() string       { return p.Name }
 func (p ProjectInfo) Description() string { return p.Path }
 
 // ======================================================================================
-// LOGGING
+// AUTO UPDATE LOGIC
+// ======================================================================================
+
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		BrowserDownloadURL string `json:"browser_download_url"`
+		Name               string `json:"name"`
+	} `json:"assets"`
+}
+
+func checkUpdate() (string, string, error) {
+	// Если версия dev, пропускаем проверку (для локальной разработки)
+	if AppVersion == "dev" {
+		return "", "", nil
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", RepoOwner, RepoName)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("github api status: %s", resp.Status)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", "", err
+	}
+
+	// Сравниваем версии (простое строковое сравнение)
+	// В GitHub Actions мы задаем версию как v1.0.X.
+	if release.TagName != "" && release.TagName != AppVersion {
+		for _, asset := range release.Assets {
+			// Ищем exe файл
+			if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
+				return release.TagName, asset.BrowserDownloadURL, nil
+			}
+		}
+	}
+
+	return "", "", nil
+}
+
+func doUpdate(url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// selfupdate делает магию под Windows: переименовывает текущий exe в .old и пишет новый
+	err = selfupdate.Apply(resp.Body, selfupdate.Options{})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ======================================================================================
+// LOGGING & BUSINESS LOGIC
 // ======================================================================================
 
 func WriteLog(msg string) {
@@ -100,10 +171,6 @@ func WriteLog(msg string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	f.WriteString(fmt.Sprintf("[%s] %s\n", timestamp, msg))
 }
-
-// ======================================================================================
-// BUSINESS LOGIC: XML & VERSIONING
-// ======================================================================================
 
 func findVersionInXML(r io.Reader) string {
 	decoder := xml.NewDecoder(r)
@@ -206,10 +273,6 @@ func extractVersionFromFolder(folderPath string) string {
 	return "Unknown"
 }
 
-// ======================================================================================
-// RECURSIVE SCANNER
-// ======================================================================================
-
 func ScanProjects(root string) []ProjectInfo {
 	var projects []ProjectInfo
 
@@ -237,7 +300,6 @@ func ScanProjects(root string) []ProjectInfo {
 		name := d.Name()
 		lowerName := strings.ToLower(name)
 
-		// .pcwex
 		if strings.HasSuffix(lowerName, ".pcwex") {
 			ver, _ := extractVersionFromZip(path)
 			if ver == "" {
@@ -249,16 +311,13 @@ func ScanProjects(root string) []ProjectInfo {
 			return nil
 		}
 
-		// .pcwef
 		if strings.HasSuffix(lowerName, ".pcwef") {
 			baseName := strings.TrimSuffix(name, filepath.Ext(name))
 			flatFolder := filepath.Join(filepath.Dir(path), baseName+"Flat")
 			ver := "Unknown"
-
 			if _, err := os.Stat(flatFolder); err == nil {
 				ver = extractVersionFromFolder(flatFolder)
 			}
-
 			projects = append(projects, ProjectInfo{
 				Name: name, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true,
 			})
@@ -274,10 +333,6 @@ func ScanProjects(root string) []ProjectInfo {
 
 	return projects
 }
-
-// ======================================================================================
-// IDE DETECTION & CONTROL
-// ======================================================================================
 
 func FindInstalledIDEs() map[string]string {
 	versions := make(map[string]string)
@@ -384,6 +439,8 @@ const (
 	StateLaunching
 	StateSuccess
 	StateError
+	StateUpdateFound // New State for Update
+	StateUpdating    // New State while downloading
 )
 
 type model struct {
@@ -397,6 +454,8 @@ type model struct {
 	err         error
 	width       int
 	height      int
+	updateVer   string // New version found
+	updateURL   string // Download URL
 }
 
 func initialModel() model {
@@ -450,7 +509,7 @@ func (m *model) reloadList() {
 	}
 
 	l := list.New(items, projectDelegate{}, 0, 0)
-	l.Title = "PLCnext Projects"
+	l.Title = fmt.Sprintf("PLCnext Projects (%s)", AppVersion) // Показываем версию в заголовке
 	l.SetShowHelp(false)
 	l.Styles.Title = titleStyle
 
@@ -472,8 +531,33 @@ func (m *model) reloadList() {
 	}
 }
 
+// Сообщения для обновления
+type updateCheckMsg struct {
+	version string
+	url     string
+	err     error
+}
+type updateDoneMsg struct{ err error }
+
+// Команда проверки обновления
+func checkUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		ver, url, err := checkUpdate()
+		return updateCheckMsg{version: ver, url: url, err: err}
+	}
+}
+
+// Команда выполнения обновления
+func performUpdateCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		err := doUpdate(url)
+		return updateDoneMsg{err: err}
+	}
+}
+
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	// При старте мигаем курсором и проверяем обновления
+	return tea.Batch(textinput.Blink, checkUpdateCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -486,6 +570,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetSize(msg.Width, msg.Height-2)
 		}
 
+	case updateCheckMsg:
+		// Если нашли новую версию
+		if msg.err == nil && msg.version != "" {
+			m.updateVer = msg.version
+			m.updateURL = msg.url
+			m.state = StateUpdateFound
+		}
+
+	case updateDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = StateError
+		} else {
+			m.logMsg = "Update successful! Please restart the application."
+			m.state = StateSuccess
+		}
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
@@ -496,6 +597,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.state {
+	case StateUpdateFound:
+		// Логика окна "Найдено обновление"
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "y", "Y", "enter":
+				m.state = StateUpdating
+				return m, tea.Batch(m.spinner.Tick, performUpdateCmd(m.updateURL))
+			case "n", "N", "esc":
+				m.state = StateList // Отказ от обновления, идем в список
+				return m, nil
+			}
+		}
+		return m, nil
+
+	case StateUpdating:
+		var spinCmd tea.Cmd
+		m.spinner, spinCmd = m.spinner.Update(msg)
+		// Ждем updateDoneMsg
+		return m, spinCmd
+
 	case StateConfig:
 		var tiCmd tea.Cmd
 		m.textInput, tiCmd = m.textInput.Update(msg)
@@ -569,6 +690,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	switch m.state {
+	case StateUpdateFound:
+		return appStyle.Render(fmt.Sprintf(
+			"%s\n\n"+
+				"New version available: %s\n"+
+				"Current version: %s\n\n"+
+				"%s",
+			titleStyle.Render("Update Available"),
+			verStyle.Render(m.updateVer),
+			m.configVersionView(),
+			dirStyle.Render("Do you want to update now? (y/n)"),
+		))
+
+	case StateUpdating:
+		return appStyle.Render(fmt.Sprintf(
+			"\n   %s Downloading update...\n\n   %s",
+			m.spinner.View(),
+			dirStyle.Render("Please wait, the app will restart automatically (or close)"),
+		))
+
 	case StateConfig:
 		return appStyle.Render(fmt.Sprintf(
 			"%s\n\n"+
@@ -604,6 +744,13 @@ func (m model) View() string {
 	}
 
 	return ""
+}
+
+func (m model) configVersionView() string {
+	if AppVersion == "" {
+		return "dev"
+	}
+	return AppVersion
 }
 
 // ======================================================================================
