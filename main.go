@@ -176,10 +176,7 @@ func cleanupOldVersion() {
 		return
 	}
 	oldExe := exe + ".old"
-	// Проверяем, существует ли старый файл
 	if _, err := os.Stat(oldExe); err == nil {
-		// Пытаемся удалить. Ошибки игнорируем (например, если файл все еще занят),
-		// удалится при следующем запуске.
 		_ = os.Remove(oldExe)
 	}
 }
@@ -618,10 +615,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		// Обработка клавиши R только в состоянии Success
 		if m.state == StateSuccess && (msg.String() == "r" || msg.String() == "R") {
 			restartApp()
-			return m, tea.Quit // На всякий случай, хотя restartApp делает Exit
+			return m, tea.Quit
 		}
 
 		if msg.String() == "ctrl+c" {
@@ -653,6 +649,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, spinCmd
 
 	case StateConfig:
+		// Добавляем обработку Esc для выхода без сохранения
+		if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
+			// Если уже есть конфиг, возвращаемся в список
+			if len(m.config.WorkDirs) > 0 {
+				m.state = StateList
+				return m, nil
+			}
+		}
+
 		var tiCmd tea.Cmd
 		m.textInput, tiCmd = m.textInput.Update(msg)
 		if key, ok := msg.(tea.KeyMsg); ok && key.Type == tea.KeyEnter {
@@ -676,7 +681,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.list.FilterState() != list.Filtering {
 				if key.String() == "c" {
 					m.state = StateConfig
-					m.textInput.SetValue("")
+					// Предустанавливаем текущий путь, если он есть
+					currentPath := ""
+					if len(m.config.WorkDirs) > 0 {
+						currentPath = m.config.WorkDirs[0]
+					}
+					m.textInput.SetValue(currentPath)
+					m.textInput.CursorEnd() // Ставим курсор в конец
 					m.textInput.Focus()
 					return m, nil
 				}
@@ -761,7 +772,7 @@ func (m model) View() string {
 			lipgloss.NewStyle().Foreground(textColor).Render("Enter project directory path:"),
 			m.textInput.View(),
 			"\n",
-			subTextStyle.Render("Press Enter to scan"),
+			subTextStyle.Render("Press Enter to scan • Esc to cancel"), // Обновили подсказку
 		)
 		return centerContent(boxStyle.Render(ui))
 
@@ -925,9 +936,7 @@ func saveConfig(cfg Config) error {
 }
 
 func main() {
-	// 1. Попытка удалить старый файл версии (.old)
 	cleanupOldVersion()
-
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
