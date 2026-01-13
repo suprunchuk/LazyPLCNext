@@ -963,6 +963,11 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 		targetVer := proj.Version
 		WriteLog("Project version detected: " + targetVer)
 
+		absPath, err := filepath.Abs(launchPath)
+		if err == nil {
+			launchPath = absPath
+		}
+
 		installed := FindInstalledIDEs()
 		idePath, ok := installed[targetVer]
 
@@ -989,6 +994,7 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 
 		WriteLog(fmt.Sprintf("Executing: %s \"%s\"", idePath, launchPath))
 		cmd := exec.Command(idePath, launchPath)
+		cmd.Dir = filepath.Dir(idePath)
 		if err := cmd.Start(); err != nil {
 			WriteLog(fmt.Sprintf("Launch error: %v", err))
 			return launchResultMsg{err: err}
