@@ -40,7 +40,7 @@ const (
 	UpdateCheckInterval = time.Minute * 1
 )
 
-var AppVersion = "v1.0.4-fix-autoupdate"
+var AppVersion = "dev"
 
 // --- THEME & STYLES ---
 
