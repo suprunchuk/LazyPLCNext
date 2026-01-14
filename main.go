@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -990,9 +991,13 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 			WriteLog(fmt.Sprintf("Target IDE version is already running (PID: %d).", pid))
 		}
 
-		WriteLog(fmt.Sprintf("Executing: %s \"%s\"", idePath, launchPath))
-		cmd := exec.Command(idePath, launchPath)
+		WriteLog(fmt.Sprintf("Executing via cmd /C start: %s \"%s\"", idePath, launchPath))
+
+		cmd := exec.Command("cmd", "/C", "start", "", idePath, launchPath)
 		cmd.Dir = filepath.Dir(idePath)
+
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
 		if err := cmd.Start(); err != nil {
 			WriteLog(fmt.Sprintf("Launch error: %v", err))
 			return launchResultMsg{err: err}
