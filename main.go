@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -986,18 +985,50 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 			WriteLog(fmt.Sprintf("Found exact IDE match: %s", idePath))
 		}
 
-		_, pid, isRunning := GetRunningIDE(targetVer)
-		if isRunning {
-			WriteLog(fmt.Sprintf("Target IDE version is already running (PID: %d).", pid))
+		// Calculate the intended version from the determined IDE path.
+		// This handles cases where we fallback to a different version or proj.Version was "Unknown"
+		verRe := regexp.MustCompile(`(\d+(\.\d+)+)`)
+		targetDir := filepath.Base(filepath.Dir(idePath))
+		intendedVersion := verRe.FindString(targetDir)
+		WriteLog("Intended IDE version to run: " + intendedVersion)
+
+		// Check ALL running processes to find conflicts
+		procs, _ := process.Processes()
+		for _, p := range procs {
+			name, err := p.Name()
+			if err != nil {
+				continue
+			}
+
+			// If we find a running PLCnext Engineer process
+			if strings.Contains(name, "PLCNENG64") || strings.Contains(name, "PLCnextEngineer") {
+				exePath, err := p.Exe()
+				if err != nil {
+					continue
+				}
+
+				// Extract version of the running process
+				runningDir := filepath.Base(filepath.Dir(exePath))
+				runningVer := verRe.FindString(runningDir)
+
+				if runningVer != "" && runningVer != intendedVersion {
+					WriteLog(fmt.Sprintf("CONFLICT: Found running IDE v%s (PID: %d). Intended is v%s. Killing...", runningVer, p.Pid, intendedVersion))
+					if err := p.Kill(); err != nil {
+						WriteLog(fmt.Sprintf("Warning: Failed to kill process %d: %v", p.Pid, err))
+					} else {
+						// Wait briefly for the process to actually exit to avoid file lock issues
+						time.Sleep(2 * time.Second)
+						WriteLog("Old process killed.")
+					}
+				} else if runningVer == intendedVersion {
+					WriteLog(fmt.Sprintf("Same version v%s is already running. Proceeding to attach/open.", runningVer))
+				}
+			}
 		}
 
-		WriteLog(fmt.Sprintf("Executing via cmd /C start: %s \"%s\"", idePath, launchPath))
-
-		cmd := exec.Command("cmd", "/C", "start", "", idePath, launchPath)
+		WriteLog(fmt.Sprintf("Executing: %s \"%s\"", idePath, launchPath))
+		cmd := exec.Command(idePath, launchPath)
 		cmd.Dir = filepath.Dir(idePath)
-
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
 		if err := cmd.Start(); err != nil {
 			WriteLog(fmt.Sprintf("Launch error: %v", err))
 			return launchResultMsg{err: err}
