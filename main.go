@@ -403,7 +403,7 @@ func ScanProjects(root string) []ProjectInfo {
 			parentDir := filepath.Dir(path)
 			branch := getGitBranch(parentDir)
 			projects = append(projects, ProjectInfo{
-				Name: filepath.Base(parentDir), Path: path, Type: TypePCWEX, Version: ver, GitBranch: branch,
+				Name: strings.TrimSuffix(name, filepath.Ext(name)), Path: path, Type: TypePCWEX, Version: ver, GitBranch: branch,
 			})
 			return nil
 		}
@@ -418,7 +418,7 @@ func ScanProjects(root string) []ProjectInfo {
 			parentDir := filepath.Dir(path)
 			branch := getGitBranch(parentDir)
 			projects = append(projects, ProjectInfo{
-				Name: filepath.Base(parentDir), Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
+				Name: baseName, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
 			})
 			return nil
 		}
@@ -944,7 +944,8 @@ func (m model) View() string {
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render("✔ SUCCESS"),
 			"\n",
-			m.logMsg,
+			lipgloss.NewStyle().Foreground(colText).Bold(true).Render(m.selectedPrj.Name),
+			subTextStyle.Render(m.logMsg),
 			"\n",
 			helpText,
 		)
@@ -1080,7 +1081,7 @@ func buildProjectInfoFromPath(rawPath string) (ProjectInfo, error) {
 
 	lower := strings.ToLower(absPath)
 	parentDir := filepath.Dir(absPath)
-	name := filepath.Base(parentDir)
+	fileName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
 
 	switch {
 	case strings.HasSuffix(lower, ".pcwex"):
@@ -1090,7 +1091,7 @@ func buildProjectInfoFromPath(rawPath string) (ProjectInfo, error) {
 		}
 		branch := getGitBranch(parentDir)
 		return ProjectInfo{
-			Name: name, Path: absPath, Type: TypePCWEX, Version: ver, GitBranch: branch,
+			Name: fileName, Path: absPath, Type: TypePCWEX, Version: ver, GitBranch: branch,
 		}, nil
 
 	case strings.HasSuffix(lower, ".pcwef"):
@@ -1102,7 +1103,7 @@ func buildProjectInfoFromPath(rawPath string) (ProjectInfo, error) {
 		}
 		branch := getGitBranch(parentDir)
 		return ProjectInfo{
-			Name: name, Path: absPath, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
+			Name: fileName, Path: absPath, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
 		}, nil
 
 	default:
