@@ -569,9 +569,10 @@ type model struct {
 	height      int
 	updateVer   string
 	updateURL   string
+	directMode  bool // true when launched with a CLI path argument — list is never initialized
 }
 
-func initialModel() model {
+func initialModel(directProj *ProjectInfo) model {
 	ti := textinput.New()
 	ti.Placeholder = "C:\\PhoenixProjects"
 	ti.Focus()
@@ -588,6 +589,13 @@ func initialModel() model {
 		state:     StateConfig,
 		textInput: ti,
 		spinner:   sp,
+	}
+
+	if directProj != nil {
+		m.selectedPrj = *directProj
+		m.state = StateLaunching
+		m.directMode = true
+		return m
 	}
 
 	cfg, err := loadConfig()
@@ -674,11 +682,15 @@ func performUpdateCmd(url string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textinput.Blink,
 		checkUpdateCmd(),
 		waitForNextUpdateCheck(),
-	)
+	}
+	if m.state == StateLaunching {
+		cmds = append(cmds, m.spinner.Tick, launchProjectCmd(m.selectedPrj))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -728,6 +740,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "esc", "enter", "q", " ":
+				if m.directMode {
+					return m, tea.Quit
+				}
 				m.state = StateList
 				return m, nil
 			}
@@ -742,6 +757,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = StateUpdating
 				return m, tea.Batch(m.spinner.Tick, performUpdateCmd(m.updateURL))
 			case "n", "N", "esc":
+				if m.directMode {
+					return m, tea.Quit
+				}
 				m.state = StateList
 				return m, nil
 			}
@@ -823,6 +841,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateError:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			if key.Type != tea.KeyNull {
+				if m.directMode {
+					return m, tea.Quit
+				}
 				m.state = StateList
 				return m, nil
 			}
@@ -1042,6 +1063,63 @@ func launchProjectCmd(proj ProjectInfo) tea.Cmd {
 // CONFIG UTILS
 // ======================================================================================
 
+// ======================================================================================
+// CLI UTILS
+// ======================================================================================
+
+// buildProjectInfoFromPath constructs a ProjectInfo from a direct file/folder path.
+// Supports .pcwex, .pcwef files and flat project folders (containing Solution.xml).
+func buildProjectInfoFromPath(rawPath string) (ProjectInfo, error) {
+	absPath, err := filepath.Abs(rawPath)
+	if err != nil {
+		return ProjectInfo{}, fmt.Errorf("cannot resolve path: %w", err)
+	}
+	if _, err := os.Stat(absPath); err != nil {
+		return ProjectInfo{}, fmt.Errorf("path does not exist: %s", absPath)
+	}
+
+	lower := strings.ToLower(absPath)
+	parentDir := filepath.Dir(absPath)
+	name := filepath.Base(parentDir)
+
+	switch {
+	case strings.HasSuffix(lower, ".pcwex"):
+		ver, _ := extractVersionFromZip(absPath)
+		if ver == "" {
+			ver = "Unknown"
+		}
+		branch := getGitBranch(parentDir)
+		return ProjectInfo{
+			Name: name, Path: absPath, Type: TypePCWEX, Version: ver, GitBranch: branch,
+		}, nil
+
+	case strings.HasSuffix(lower, ".pcwef"):
+		baseName := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+		flatFolder := filepath.Join(parentDir, baseName+"Flat")
+		ver := "Unknown"
+		if _, err := os.Stat(flatFolder); err == nil {
+			ver = extractVersionFromFolder(flatFolder)
+		}
+		branch := getGitBranch(parentDir)
+		return ProjectInfo{
+			Name: name, Path: absPath, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
+		}, nil
+
+	default:
+		// Try flat folder (directory containing Solution.xml)
+		if info, err := os.Stat(absPath); err == nil && info.IsDir() {
+			if _, err := os.Stat(filepath.Join(absPath, "Solution.xml")); err == nil {
+				ver := extractVersionFromFolder(absPath)
+				branch := getGitBranch(absPath)
+				return ProjectInfo{
+					Name: filepath.Base(absPath), Path: absPath, Type: TypeFlat, Version: ver, GitBranch: branch,
+				}, nil
+			}
+		}
+		return ProjectInfo{}, fmt.Errorf("unsupported project type or not a PLCnext project: %s", rawPath)
+	}
+}
+
 func loadConfig() (Config, error) {
 	var cfg Config
 	exePath, _ := os.Executable()
@@ -1071,7 +1149,45 @@ func saveConfig(cfg Config) error {
 
 func main() {
 	cleanupOldVersion()
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
+
+	// --- CLI argument handling ---
+	// Usage: LazyPLCNext.exe [path/to/project.pcwef|.pcwex|folder]
+	//        LazyPLCNext.exe --help
+	var directProj *ProjectInfo
+
+	args := os.Args[1:]
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help", "-help":
+			fmt.Printf("LazyPLCNext v%s\n\n", AppVersion)
+			fmt.Println("Usage:")
+			fmt.Println("  LazyPLCNext.exe                          — open project browser")
+			fmt.Println("  LazyPLCNext.exe <path>                   — open project directly")
+			fmt.Println()
+			fmt.Println("Supported project types:")
+			fmt.Println("  *.pcwef   — PLCnext Engineer flat-file project")
+			fmt.Println("  *.pcwex   — PLCnext Engineer zipped project")
+			fmt.Println("  <folder>  — flat project folder (must contain Solution.xml)")
+			fmt.Println()
+			fmt.Println("Examples:")
+			fmt.Println(`  LazyPLCNext.exe "D:\Projects\MyProject\MyProject.pcwef"`)
+			fmt.Println(`  LazyPLCNext.exe "D:\Projects\MyProject\MyProject.pcwex"`)
+			fmt.Println(`  LazyPLCNext.exe "D:\Projects\MyProjectFlat"`)
+			os.Exit(0)
+		default:
+			// Treat the first non-flag argument as a project path
+			if directProj == nil && !strings.HasPrefix(arg, "-") {
+				proj, err := buildProjectInfoFromPath(arg)
+				if err != nil {
+					fmt.Printf("Error: %v\n", err)
+					os.Exit(1)
+				}
+				directProj = &proj
+			}
+		}
+	}
+
+	p := tea.NewProgram(initialModel(directProj), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
 		os.Exit(1)
