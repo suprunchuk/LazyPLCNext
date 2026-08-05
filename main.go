@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/minio/selfupdate"
 	"github.com/shirou/gopsutil/v3/process"
@@ -82,15 +84,24 @@ var (
 			MarginRight(1).
 			Bold(true)
 
-	verBadgeStyle = badgeStyle.Copy().
+	verBadgeStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			MarginRight(1).
+			Bold(true).
 			Foreground(lipgloss.Color("#000000")).
 			Background(colAccent)
 
-	gitBadgeStyle = badgeStyle.Copy().
+	gitBadgeStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			MarginRight(1).
+			Bold(true).
 			Foreground(colText).
 			Background(colGit)
 
-	typeBadgeStyle = badgeStyle.Copy().
+	typeBadgeStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			MarginRight(1).
+			Bold(true).
 			Foreground(colText).
 			Background(colSecondary)
 
@@ -110,6 +121,42 @@ var (
 
 	focusedInputStyle = lipgloss.NewStyle().
 				Foreground(colPrimary)
+
+	// Header / Footer
+	appTitleStyle = lipgloss.NewStyle().
+			Foreground(colPrimary).
+			Bold(true)
+
+	appVersionStyle = lipgloss.NewStyle().
+			Foreground(colAccent).
+			Bold(true)
+
+	footerStyle = lipgloss.NewStyle().
+			Foreground(colSubText)
+
+	updateHintStyle = lipgloss.NewStyle().
+			Foreground(colAccent).
+			Bold(true)
+
+	emptyStyle = lipgloss.NewStyle().
+			Foreground(colSubText).
+			Italic(true).
+			Align(lipgloss.Center)
+
+	// Separators / panels
+	separatorStyle = lipgloss.NewStyle().
+			Foreground(colSecondary)
+)
+
+// Spring animation tuning. A critically-damped spring (damping ~1) reaches the
+// target quickly without oscillating; a slightly under-damped spring gives a
+// subtle overshoot for a more lively feel.
+const (
+	animFPS         = 60
+	animFrequency   = 10.0
+	animDamping     = 0.65
+	animEpsilon     = 0.001
+	animFramePeriod = time.Second / animFPS
 )
 
 // ======================================================================================
@@ -480,7 +527,7 @@ type projectDelegate struct {
 }
 
 func (d projectDelegate) Height() int                             { return 2 }
-func (d projectDelegate) Spacing() int                            { return 1 }
+func (d projectDelegate) Spacing() int                            { return 0 }
 func (d projectDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
 	p, ok := listItem.(ProjectInfo)
@@ -525,16 +572,16 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		displayPath = "..." + displayPath[len(displayPath)-57:]
 	}
 
+	badges := lipgloss.JoinHorizontal(lipgloss.Center, typeBadge, gitBadge, verBadge)
+
 	if index == m.Index() {
 		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
-		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
-		descRes = selectedItemStyle.Copy().UnsetBorderStyle().Render(
-			fmt.Sprintf("%s\n%s", badges, displayPath),
+		descRes = selectedItemStyle.Render(
+			fmt.Sprintf("%s %s", badges, itemDescStyle.Render(displayPath)),
 		)
 	} else {
 		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
-		badges := lipgloss.JoinHorizontal(lipgloss.Left, typeBadge, gitBadge, verBadge)
-		descRes = fmt.Sprintf("   %s\n   %s", badges, itemDescStyle.Render(displayPath))
+		descRes = fmt.Sprintf("  %s %s", badges, itemDescStyle.Render(displayPath))
 	}
 
 	fmt.Fprint(w, titleRes+"\n"+descRes)
@@ -569,7 +616,14 @@ type model struct {
 	height      int
 	updateVer   string
 	updateURL   string
+	updateAvail bool
 	directMode  bool // true when launched with a CLI path argument — list is never initialized
+
+	// Spring animation for dialog reveal (0 = hidden, 1 = fully shown).
+	spring    harmonica.Spring
+	animPos   float64
+	animVel   float64
+	animating bool
 }
 
 func initialModel(directProj *ProjectInfo) model {
@@ -589,12 +643,14 @@ func initialModel(directProj *ProjectInfo) model {
 		state:     StateConfig,
 		textInput: ti,
 		spinner:   sp,
+		spring:    harmonica.NewSpring(harmonica.FPS(animFPS), animFrequency, animDamping),
 	}
 
 	if directProj != nil {
 		m.selectedPrj = *directProj
 		m.state = StateLaunching
 		m.directMode = true
+		m.animPos = 1.0
 		return m
 	}
 
@@ -633,26 +689,54 @@ func (m *model) reloadList() {
 
 	delegate := projectDelegate{UseNerdFonts: m.config.UseNerdFonts}
 	l := list.New(items, delegate, 0, 0)
-	l.Title = "PLCnext Projects"
-	l.SetShowHelp(false)
+	l.Title = " PLCnext Projects "
+	l.SetShowHelp(true)
 	l.Styles.Title = titleStyle
-	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
+	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(2)
+	l.Styles.HelpStyle = list.DefaultStyles().HelpStyle.PaddingLeft(2).PaddingBottom(0)
 
-	l.AdditionalFullHelpKeys = func() []key.Binding {
+	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change path")),
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "launch")),
 		}
 	}
+	l.AdditionalFullHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change project directory")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "launch selected project")),
+		}
+	}
+
+	if len(items) == 0 {
+		l.SetStatusBarItemName("project", "projects")
+	}
 
 	m.list = l
 	m.state = StateList
 	if m.width > 0 {
-		m.list.SetSize(m.width, m.height-2)
+		m.list.SetSize(m.width-6, m.height-6)
 	}
 }
 
 type tickMsg time.Time
+
+type frameMsg time.Time
+
+func frameCmd() tea.Cmd {
+	return tea.Tick(animFramePeriod, func(t time.Time) tea.Msg {
+		return frameMsg(t)
+	})
+}
+
+// startAnimation resets the spring to the hidden state and begins a reveal
+// animation towards the target. Returns the command that drives the animation.
+func (m *model) startAnimation() tea.Cmd {
+	m.animPos = 0.0
+	m.animVel = 0.0
+	m.animating = true
+	return frameCmd()
+}
 
 type updateCheckMsg struct {
 	version string
@@ -701,18 +785,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		docStyle = docStyle.MaxWidth(m.width).MaxHeight(m.height)
 		if m.state == StateList {
-			m.list.SetSize(msg.Width-4, msg.Height-4)
+			m.list.SetSize(msg.Width-6, msg.Height-6)
 		}
 
 	case tickMsg:
 		return m, tea.Batch(checkUpdateCmd(), waitForNextUpdateCheck())
 
+	case frameMsg:
+		if m.animating {
+			m.animPos, m.animVel = m.spring.Update(m.animPos, m.animVel, 1.0)
+			if math.Abs(m.animPos-1.0) < animEpsilon && math.Abs(m.animVel) < animEpsilon {
+				m.animPos = 1.0
+				m.animVel = 0.0
+				m.animating = false
+			} else {
+				return m, frameCmd()
+			}
+		}
+
 	case updateCheckMsg:
 		if msg.err == nil && msg.version != "" {
-			if m.state != StateLaunching && m.state != StateUpdating && m.state != StateUpdateFound {
-				m.updateVer = msg.version
-				m.updateURL = msg.url
-				m.state = StateUpdateFound
+			m.updateVer = msg.version
+			m.updateURL = msg.url
+			m.updateAvail = true
+			// Only interrupt with the update prompt when not busy.
+			if m.state != StateLaunching && m.state != StateUpdating &&
+				m.state != StateUpdateFound && m.state != StateConfig {
+				// Don't interrupt while the user is typing a filter.
+				if m.state != StateList || m.list.FilterState() != list.Filtering {
+					m.state = StateUpdateFound
+					return m, m.startAnimation()
+				}
 			}
 		}
 
@@ -720,14 +823,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.state = StateError
-		} else {
-			m.logMsg = "Update successful! Please restart."
-			m.state = StateSuccess
+			return m, m.startAnimation()
 		}
+		m.logMsg = "Update successful! Please restart."
+		m.state = StateSuccess
+		return m, m.startAnimation()
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
+			if m.state != StateUpdating {
+				return m, tea.Quit
+			}
 		}
 		if m.state == StateList && msg.String() == "q" && m.list.FilterState() != list.Filtering {
 			return m, tea.Quit
@@ -739,7 +845,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			switch msg.String() {
-			case "esc", "enter", "q", " ":
+			case "esc", "enter", "q":
 				if m.directMode {
 					return m, tea.Quit
 				}
@@ -755,7 +861,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key.String() {
 			case "y", "Y", "enter":
 				m.state = StateUpdating
-				return m, tea.Batch(m.spinner.Tick, performUpdateCmd(m.updateURL))
+				return m, tea.Batch(m.startAnimation(), m.spinner.Tick, performUpdateCmd(m.updateURL))
 			case "n", "N", "esc":
 				if m.directMode {
 					return m, tea.Quit
@@ -777,6 +883,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = StateList
 				return m, nil
 			}
+			return m, tea.Quit
 		}
 
 		var tiCmd tea.Cmd
@@ -789,10 +896,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					saveConfig(m.config)
 					m.reloadList()
 					return m, nil
-				} else {
-					m.textInput.Placeholder = "Invalid directory!"
-					m.textInput.SetValue("")
 				}
+				m.textInput.Placeholder = "Invalid directory! Try again..."
+				m.textInput.SetValue("")
 			}
 		}
 		return m, tiCmd
@@ -809,14 +915,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.SetValue(currentPath)
 					m.textInput.CursorEnd()
 					m.textInput.Focus()
-					return m, nil
+					return m, m.startAnimation()
 				}
-			}
-			if key.Type == tea.KeyEnter && m.list.FilterState() != list.Filtering {
-				if i, ok := m.list.SelectedItem().(ProjectInfo); ok {
-					m.selectedPrj = i
-					m.state = StateLaunching
-					return m, tea.Batch(m.spinner.Tick, launchProjectCmd(m.selectedPrj))
+				if key.Type == tea.KeyEnter {
+					if i, ok := m.list.SelectedItem().(ProjectInfo); ok {
+						m.selectedPrj = i
+						m.state = StateLaunching
+						return m, tea.Batch(m.startAnimation(), m.spinner.Tick, launchProjectCmd(m.selectedPrj))
+					}
 				}
 			}
 		}
@@ -831,22 +937,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if res.err != nil {
 				m.err = res.err
 				m.state = StateError
-			} else {
-				m.logMsg = res.message
-				m.state = StateSuccess
+				return m, tea.Batch(spinCmd, m.startAnimation())
 			}
+			m.logMsg = res.message
+			m.state = StateSuccess
+			return m, tea.Batch(spinCmd, m.startAnimation())
 		}
 		return m, spinCmd
 
 	case StateError:
-		if key, ok := msg.(tea.KeyMsg); ok {
-			if key.Type != tea.KeyNull {
-				if m.directMode {
-					return m, tea.Quit
-				}
-				m.state = StateList
-				return m, nil
+		if _, ok := msg.(tea.KeyMsg); ok {
+			if m.directMode {
+				return m, tea.Quit
 			}
+			m.state = StateList
+			return m, nil
 		}
 	}
 
@@ -864,48 +969,89 @@ func (m model) View() string {
 			content)
 	}
 
+	dialogWidth := 60
+	if m.width > 0 && m.width-8 < dialogWidth {
+		dialogWidth = m.width - 8
+	}
+	if dialogWidth < 20 {
+		dialogWidth = 20
+	}
+
+	// Spring-driven reveal factor (0..1). Clamped so the box never collapses
+	// below a readable size while animating.
+	reveal := m.animPos
+	if reveal < 0.0 {
+		reveal = 0.0
+	} else if reveal > 1.0 {
+		reveal = 1.0
+	}
+	animWidth := int(reveal * float64(dialogWidth))
+	if animWidth < 20 {
+		animWidth = 20
+	}
+
 	switch m.state {
 	case StateUpdateFound:
+		newVer := lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.updateVer)
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			titleStyle.Render(" UPDATE AVAILABLE "),
-			"\n",
-			fmt.Sprintf("New version: %s", lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.updateVer)),
-			fmt.Sprintf("Current version: %s", AppVersion),
-			"\n",
-			subTextStyle.Render("Download and install now? (y/n)"),
+			"",
+			fmt.Sprintf("New version:      %s", newVer),
+			fmt.Sprintf("Current version:  %s", AppVersion),
+			"",
+			subTextStyle.Render("Download and install now?"),
+			updateHintStyle.Render("[y] yes   [n] later"),
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
+		return centerContent(box.Render(ui))
 
 	case StateUpdating:
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			m.spinner.View()+" Updating...",
-			"\n",
+			"",
 			subTextStyle.Render("Application will restart automatically"),
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
+		return centerContent(box.Render(ui))
 
 	case StateConfig:
 		ui := lipgloss.JoinVertical(lipgloss.Left,
 			titleStyle.Render(" CONFIGURATION "),
-			"\n",
+			"",
 			lipgloss.NewStyle().Foreground(colText).Render("Enter project directory path:"),
 			m.textInput.View(),
-			"\n",
-			subTextStyle.Render("Press Enter to scan • Esc to cancel"),
+			"",
+			subTextStyle.Render("Enter  scan   Esc  cancel"),
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth)
+		return centerContent(box.Render(ui))
 
 	case StateList:
-		status := fmt.Sprintf("Ver: %s | Projects: %d | 'c': config | 'q': quit", AppVersion, len(m.list.Items()))
-		statusView := lipgloss.NewStyle().
-			Foreground(colSubText).
-			Width(m.width - 4).
-			Align(lipgloss.Right).
-			Render(status)
+		header := m.renderHeader()
+		status := m.renderStatusBar()
+
+		contentWidth := m.width - 4
+		if contentWidth < 1 {
+			contentWidth = 1
+		}
+
+		sep := separatorStyle.Render(strings.Repeat("─", contentWidth))
+
+		body := m.list.View()
+		if len(m.list.Items()) == 0 {
+			emptyMsg := emptyStyle.Width(contentWidth).Render(
+				"No projects found in:\n" + m.config.WorkDirs[0] +
+					"\n\nPress [c] to change the directory.",
+			)
+			body = emptyMsg
+		}
 
 		return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-			m.list.View(),
-			statusView,
+			header,
+			sep,
+			body,
+			sep,
+			status,
 		))
 
 	case StateLaunching:
@@ -923,46 +1069,119 @@ func (m model) View() string {
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			m.spinner.View()+" Launching Environment",
-			"\n",
+			"",
 			info,
 			lipgloss.JoinHorizontal(lipgloss.Center, ver, branchInfo),
-			"\n",
+			"",
 			lipgloss.NewStyle().Italic(true).Foreground(colSubText).Render("Checking processes..."),
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
+		return centerContent(box.Render(ui))
 
 	case StateSuccess:
 		isUpdate := strings.Contains(m.logMsg, "Update successful")
 
 		var helpText string
 		if isUpdate {
-			helpText = subTextStyle.Render("Press 'R' to restart now")
+			helpText = updateHintStyle.Render("Press [R] to restart now")
 		} else {
 			helpText = subTextStyle.Render("Press Enter or Esc to return to list")
 		}
 
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render("✔ SUCCESS"),
-			"\n",
+			"",
 			lipgloss.NewStyle().Foreground(colText).Bold(true).Render(m.selectedPrj.Name),
 			subTextStyle.Render(m.logMsg),
-			"\n",
+			"",
 			helpText,
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
+		return centerContent(box.Render(ui))
 
 	case StateError:
+		errWidth := animWidth - 4
+		if errWidth < 10 {
+			errWidth = 10
+		}
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			lipgloss.NewStyle().Foreground(colError).Bold(true).Render("✖ ERROR"),
-			"\n",
-			lipgloss.NewStyle().Width(50).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
-			"\n",
+			"",
+			lipgloss.NewStyle().Width(errWidth).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
+			"",
 			subTextStyle.Render("Press any key to return"),
 		)
-		return centerContent(boxStyle.Render(ui))
+		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
+		return centerContent(box.Render(ui))
 	}
 
 	return ""
+}
+
+func (m model) renderHeader() string {
+	contentWidth := m.width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	title := appTitleStyle.Render("LazyPLCNext")
+	ver := appVersionStyle.Render("v" + AppVersion)
+
+	left := fmt.Sprintf("%s %s", title, ver)
+
+	updateTag := ""
+	if m.updateAvail {
+		updateTag = updateHintStyle.Render(" ↑ update available")
+	}
+
+	leftLen := lipgloss.Width(left) + lipgloss.Width(updateTag)
+	dots := ""
+	if contentWidth > leftLen {
+		dots = strings.Repeat(" ", contentWidth-leftLen)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, updateTag, dots)
+}
+
+func (m model) renderStatusBar() string {
+	contentWidth := m.width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	idx := m.list.Index()
+	if idx >= len(m.list.Items()) {
+		idx = len(m.list.Items()) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	pos := footerStyle.Render(fmt.Sprintf("%d/%d", idx+1, len(m.list.Items())))
+
+	left := footerStyle.Render(fmt.Sprintf("Projects: %d", len(m.list.Items())))
+
+	var rightParts []string
+	if m.config.UseNerdFonts {
+		rightParts = append(rightParts, " nerd-fonts")
+	}
+	rightParts = append(rightParts, "c config")
+	rightParts = append(rightParts, "q quit")
+	right := footerStyle.Render(strings.Join(rightParts, "   "))
+
+	leftLen := lipgloss.Width(left)
+	rightLen := lipgloss.Width(right) + lipgloss.Width(pos) + 2
+	gap := contentWidth - leftLen - rightLen
+	if gap < 1 {
+		gap = 1
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		left,
+		strings.Repeat(" ", gap),
+		pos,
+		" ",
+		right,
+	)
 }
 
 // ======================================================================================
@@ -1151,6 +1370,12 @@ func saveConfig(cfg Config) error {
 func main() {
 	cleanupOldVersion()
 
+	if len(os.Getenv("DEBUG")) > 0 {
+		if f, err := tea.LogToFile("debug.log", "debug"); err == nil {
+			defer f.Close()
+		}
+	}
+
 	// --- CLI argument handling ---
 	// Usage: LazyPLCNext.exe [path/to/project.pcwef|.pcwex|folder]
 	//        LazyPLCNext.exe --help
@@ -1188,7 +1413,7 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(directProj), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(directProj), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v", err)
 		os.Exit(1)
