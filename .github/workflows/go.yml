@@ -15,10 +15,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
 
@@ -42,10 +42,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: go.mod
 
@@ -59,7 +59,7 @@ jobs:
         GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.AppVersion=${{ env.VERSION }}" -o LazyPLCNext.exe .
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         files: LazyPLCNext.exe
         name: Release ${{ env.VERSION }}
