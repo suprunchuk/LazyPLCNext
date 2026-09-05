@@ -85,15 +85,13 @@ __Требование__: Утилита работает только на Wind
 
 ```json
 {
-  "work_dirs": [
-    "D:\\My_PLC_Projects"
-  ]
+  "work_dir": "D:\\My_PLC_Projects"
 }
 ```
 
 ## 🛠️ Сборка из исходников (для разработчиков)
 
-Если вы хотите доработать проект, вам понадобится Go 1.20+.
+Если вы хотите доработать проект, вам понадобится Go 1.27+.
 
 1. Клонируйте репозиторий:
 
@@ -114,13 +112,13 @@ go mod download
 3. Запустите проект:
 
 ```Bash
-go run main.go
+go run .
 ```
 
 4. Сборка EXE файла:
 
 ```Bash
-go build -ldflags="-s -w" -o LazyPLCNext.exe main.go
+go build -ldflags="-s -w" -o LazyPLCNext.exe .
 ```
 
 ## 🤝 Вклад в проект (Contributing)

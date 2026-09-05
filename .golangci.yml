@@ -1,0 +1,14 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Best-effort resource cleanup: errors from deferred Close on
+      # read-only files and response bodies are not actionable here.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+
+formatters:
+  enable:
+    - gofmt
