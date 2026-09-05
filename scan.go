@@ -193,11 +193,29 @@ func compareProjects(a, b ProjectInfo) int {
 	return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 }
 
+// ScanProgressFn reports scan progress: filesystem entries processed so far
+// and projects found. It is called only a few times per scan to keep the UI snappy.
+type ScanProgressFn func(itemsScanned, projectsFound int)
+
 func ScanProjects(root string) []ProjectInfo {
+	return ScanProjectsProgress(root, nil)
+}
+
+func ScanProjectsProgress(root string, progress ScanProgressFn) []ProjectInfo {
 	var projects []ProjectInfo
+	items := 0
+	report := func() {
+		if progress != nil {
+			progress(items, len(projects))
+		}
+	}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		items++
+		if items%32 == 0 {
+			report()
 		}
 		if d.IsDir() {
 			name := strings.ToLower(d.Name())
@@ -210,6 +228,7 @@ func ScanProjects(root string) []ProjectInfo {
 				projects = append(projects, ProjectInfo{
 					Name: d.Name(), Path: path, Type: TypeFlat, Version: ver, GitBranch: branch,
 				})
+				report()
 				return filepath.SkipDir
 			}
 			return nil
@@ -228,6 +247,7 @@ func ScanProjects(root string) []ProjectInfo {
 			projects = append(projects, ProjectInfo{
 				Name: strings.TrimSuffix(name, filepath.Ext(name)), Path: path, Type: TypePCWEX, Version: ver, GitBranch: branch,
 			})
+			report()
 			return nil
 		}
 
@@ -243,6 +263,7 @@ func ScanProjects(root string) []ProjectInfo {
 			projects = append(projects, ProjectInfo{
 				Name: baseName, Path: path, Type: TypePCWEF, Version: ver, IsPCWEF: true, GitBranch: branch,
 			})
+			report()
 			return nil
 		}
 		return nil

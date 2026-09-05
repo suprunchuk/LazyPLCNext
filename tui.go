@@ -6,11 +6,12 @@ import (
 	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,16 +29,19 @@ var (
 	colSecondary = lipgloss.Color("#006E53") // Darker Green
 	colAccent    = lipgloss.Color("#EFB335") // Warning/Accent Yellow
 	colText      = lipgloss.Color("#FAFAFA") // White-ish
-	colSubText   = lipgloss.Color("#6E6E6E") // Grey
+	colSubText   = lipgloss.Color("#8A8A8A") // Grey
+	colFaint     = lipgloss.Color("#4A4A4A") // Dark Grey
+	colMidText   = lipgloss.Color("#C4C4C4") // Soft foreground
 	colError     = lipgloss.Color("#FF453A") // Red
 	colGit       = lipgloss.Color("#F05133") // Git Orange
-	colPath      = lipgloss.Color("#4A4A4A") // Dark Grey for paths
+	colChipBg    = lipgloss.Color("#333333") // Key chip background
 
 	// Base Styles
 	docStyle = lipgloss.NewStyle().Margin(1, 2)
 
 	// Text Styles
 	subTextStyle = lipgloss.NewStyle().Foreground(colSubText)
+	midTextStyle = lipgloss.NewStyle().Foreground(colMidText)
 
 	// List Styles
 	titleStyle = lipgloss.NewStyle().
@@ -46,14 +50,22 @@ var (
 			Padding(0, 1).
 			Bold(true)
 
-	// Item Styles
 	itemTitleStyle = lipgloss.NewStyle().
-			Foreground(colText).
-			Bold(true)
+			Foreground(colMidText)
 
 	itemDescStyle = lipgloss.NewStyle().
-			Foreground(colPath)
+			Foreground(colFaint)
 
+	// Selected Item
+	cursorStyle = lipgloss.NewStyle().
+			Foreground(colPrimary).
+			Bold(true)
+
+	selectedItemStyle = lipgloss.NewStyle().
+				Foreground(colPrimary).
+				Bold(true)
+
+	// Badges Styles
 	verBadgeStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			MarginRight(1).
@@ -75,13 +87,12 @@ var (
 			Foreground(colText).
 			Background(colSecondary)
 
-	// Selected Item
-	selectedItemStyle = lipgloss.NewStyle().
-				Border(lipgloss.ThickBorder(), false, false, false, true).
-				BorderForeground(colPrimary).
-				Foreground(colPrimary).
-				Padding(0, 0, 0, 1).
-				Bold(true)
+	// Key chips ([key] label)
+	keyCapStyle = lipgloss.NewStyle().
+			Foreground(colText).
+			Background(colChipBg).
+			Padding(0, 1).
+			Bold(true)
 
 	// Box/Panel Styles
 	boxStyle = lipgloss.NewStyle().
@@ -93,14 +104,6 @@ var (
 				Foreground(colPrimary)
 
 	// Header / Footer
-	appTitleStyle = lipgloss.NewStyle().
-			Foreground(colPrimary).
-			Bold(true)
-
-	appVersionStyle = lipgloss.NewStyle().
-			Foreground(colAccent).
-			Bold(true)
-
 	footerStyle = lipgloss.NewStyle().
 			Foreground(colSubText)
 
@@ -115,7 +118,21 @@ var (
 
 	// Separators / panels
 	separatorStyle = lipgloss.NewStyle().
-			Foreground(colSecondary)
+			Foreground(colFaint)
+
+	// Launch steps
+	stepDoneStyle    = lipgloss.NewStyle().Foreground(colPrimary)
+	stepPendStyle    = lipgloss.NewStyle().Foreground(colFaint)
+	stepCurrentStyle = lipgloss.NewStyle().Foreground(colText).Bold(true)
+
+	// Scan status
+	scanTextStyle = lipgloss.NewStyle().Foreground(colSubText)
+
+	// Progress text
+	progressTextStyle = lipgloss.NewStyle().Foreground(colSubText)
+
+	// Error
+	crossStyle = lipgloss.NewStyle().Foreground(colError).Bold(true)
 )
 
 // Spring animation tuning. A critically-damped spring (damping ~1) reaches the
@@ -128,6 +145,66 @@ const (
 	animEpsilon     = 0.001
 	animFramePeriod = time.Second / animFPS
 )
+
+// gradientTitle is the product name rendered with a green-to-amber ramp,
+// computed once since the text never changes.
+var gradientTitle = gradientText("LazyPLCNext", "#25A065", "#EFB335")
+
+// gradientText renders s with a per-rune color ramp from one hex color to another.
+func gradientText(s, from, to string) string {
+	runes := []rune(s)
+	if len(runes) <= 1 {
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(from)).Render(s)
+	}
+	fr, fg, fb := hexRGB(from)
+	tr, tg, tb := hexRGB(to)
+	var b strings.Builder
+	for i, r := range runes {
+		t := float64(i) / float64(len(runes)-1)
+		hex := fmt.Sprintf("#%02x%02x%02x",
+			lerp(fr, tr, t), lerp(fg, tg, t), lerp(fb, tb, t))
+		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(hex)).Render(string(r)))
+	}
+	return b.String()
+}
+
+func hexRGB(hex string) (r, g, b int) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 128, 128, 128
+	}
+	v, err := strconv.ParseInt(hex, 16, 32)
+	if err != nil {
+		return 128, 128, 128
+	}
+	return int(v>>16) & 0xFF, int(v>>8) & 0xFF, int(v & 0xFF)
+}
+
+func lerp(a, b int, t float64) int {
+	return a + int(math.Round(float64(b-a)*t))
+}
+
+// keyChips renders a row of "[key] label" hints in a modern installer style.
+func keyChips(pairs ...[2]string) string {
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		parts = append(parts, keyCapStyle.Render(p[0])+subTextStyle.Render(" "+p[1]))
+	}
+	return strings.Join(parts, "   ")
+}
+
+func humanBytes(n int64) string {
+	const kb = 1 << 10
+	const mb = 1 << 20
+	switch {
+	case n >= mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/mb)
+	case n >= kb:
+		return fmt.Sprintf("%.0f KB", float64(n)/kb)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
 
 // ======================================================================================
 // UI: CUSTOM LIST DELEGATE
@@ -168,15 +245,10 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 		}
 		gitIcon := ""
 		if d.UseNerdFonts {
-			gitIcon = " "
+			gitIcon = "\ue0a0 "
 		}
 		gitBadge = gitBadgeStyle.Render(gitIcon + bName)
 	}
-
-	var (
-		titleRes string
-		descRes  string
-	)
 
 	displayPath := p.Path
 	if len(displayPath) > 60 {
@@ -185,17 +257,16 @@ func (d projectDelegate) Render(w io.Writer, m list.Model, index int, listItem l
 
 	badges := lipgloss.JoinHorizontal(lipgloss.Center, typeBadge, gitBadge, verBadge)
 
+	var line1, line2 string
 	if index == m.Index() {
-		titleRes = selectedItemStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
-		descRes = selectedItemStyle.Render(
-			fmt.Sprintf("%s %s", badges, itemDescStyle.Render(displayPath)),
-		)
+		line1 = cursorStyle.Render("❯") + " " + selectedItemStyle.Render(icon+" "+p.Name)
+		line2 = "  " + badges + " " + midTextStyle.Render(displayPath)
 	} else {
-		titleRes = itemTitleStyle.Render(fmt.Sprintf("%s %s", icon, p.Name))
-		descRes = fmt.Sprintf("  %s %s", badges, itemDescStyle.Render(displayPath))
+		line1 = "  " + itemTitleStyle.Render(icon+" "+p.Name)
+		line2 = "  " + badges + " " + itemDescStyle.Render(displayPath)
 	}
 
-	fmt.Fprint(w, titleRes+"\n"+descRes) //nolint:errcheck // rendering to the bubbletea renderer is best-effort
+	_, _ = fmt.Fprint(w, line1+"\n"+line2) //nolint:errcheck // rendering to the bubbletea renderer is best-effort
 }
 
 // ======================================================================================
@@ -230,6 +301,26 @@ type model struct {
 	updateAvail bool
 	directMode  bool // true when launched with a CLI path argument — list is never initialized
 
+	// events funnels background work (scan, launch, update download) into the
+	// update loop. A single listener is armed in Init and re-armed after every
+	// message received from the channel.
+	events chan tea.Msg
+
+	// scan state
+	scanning  bool
+	scanID    int
+	scanItems int
+	scanFound int
+	scanDur   time.Duration
+
+	// update download state
+	updateProg       progress.Model
+	updateDownloaded int64
+	updateTotal      int64
+
+	// launch steps
+	launchStep int
+
 	// Spring animation for dialog reveal (0 = hidden, 1 = fully shown).
 	spring    harmonica.Spring
 	animPos   float64
@@ -240,21 +331,26 @@ type model struct {
 func initialModel(directProj *ProjectInfo) model {
 	ti := textinput.New()
 	ti.Placeholder = "C:\\PhoenixProjects"
+	ti.Prompt = "❯ "
+	ti.PromptStyle = focusedInputStyle
 	ti.Focus()
 	ti.CharLimit = 256
 	ti.Width = 50
-	ti.PromptStyle = focusedInputStyle
-	ti.TextStyle = focusedInputStyle
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(colPrimary)
 
+	pr := progress.New(progress.WithScaledGradient("#25A065", "#EFB335"))
+	pr.Width = 40
+
 	m := model{
-		state:     StateConfig,
-		textInput: ti,
-		spinner:   sp,
-		spring:    harmonica.NewSpring(harmonica.FPS(animFPS), animFrequency, animDamping),
+		state:      StateConfig,
+		textInput:  ti,
+		spinner:    sp,
+		updateProg: pr,
+		events:     make(chan tea.Msg, 32),
+		spring:     harmonica.NewSpring(harmonica.FPS(animFPS), animFrequency, animDamping),
 	}
 
 	if directProj != nil {
@@ -265,24 +361,19 @@ func initialModel(directProj *ProjectInfo) model {
 		return m
 	}
 
-	cfg, err := loadConfig()
-	if err == nil && cfg.WorkDir != "" {
+	if cfg, err := loadConfig(); err == nil && cfg.WorkDir != "" {
 		if _, err := os.Stat(cfg.WorkDir); err == nil {
 			m.config = cfg
 			m.state = StateList
-			m.reloadList()
+			m.scanID = 1
+			m.scanning = true
 		}
 	}
 
 	return m
 }
 
-func (m *model) reloadList() {
-	if m.config.WorkDir == "" {
-		return
-	}
-	projects := ScanProjects(m.config.WorkDir)
-
+func (m *model) buildList(projects []ProjectInfo) {
 	slices.SortFunc(projects, compareProjects)
 
 	items := make([]list.Item, len(projects))
@@ -292,28 +383,11 @@ func (m *model) reloadList() {
 
 	delegate := projectDelegate{UseNerdFonts: m.config.UseNerdFonts}
 	l := list.New(items, delegate, 0, 0)
-	l.Title = " PLCnext Projects "
-	l.SetShowHelp(true)
-	l.Styles.Title = titleStyle
+	// The brand header and custom footer replace the built-in chrome.
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
 	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(2)
-	l.Styles.HelpStyle = list.DefaultStyles().HelpStyle.PaddingLeft(2).PaddingBottom(0)
-
-	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{
-			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change path")),
-			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "launch")),
-		}
-	}
-	l.AdditionalFullHelpKeys = func() []key.Binding {
-		return []key.Binding{
-			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "change project directory")),
-			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "launch selected project")),
-		}
-	}
-
-	if len(items) == 0 {
-		l.SetStatusBarItemName("project", "projects")
-	}
 
 	m.list = l
 	m.state = StateList
@@ -348,6 +422,64 @@ type updateCheckMsg struct {
 }
 type updateDoneMsg struct{ err error }
 
+type scanProgressMsg struct {
+	id       int
+	items    int
+	projects int
+}
+
+type scanDoneMsg struct {
+	id       int
+	projects []ProjectInfo
+	duration time.Duration
+}
+
+type launchStepMsg struct{ step int }
+
+type updateProgressMsg struct {
+	downloaded int64
+	total      int64
+}
+
+// listenEvents blocks until the next background event arrives. Exactly one
+// listener is alive at any time: armed in Init and re-armed by the Update case
+// of every channel message. Progress senders use non-blocking sends, so a busy
+// UI can only ever drop intermediate progress — never terminal results.
+func listenEvents(events chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return <-events }
+}
+
+func runScan(events chan<- tea.Msg, id int, dir string) {
+	start := time.Now()
+	projects := ScanProjectsProgress(dir, func(items, found int) {
+		select {
+		case events <- scanProgressMsg{id: id, items: items, projects: found}:
+		default: // drop intermediate progress if the UI is behind
+		}
+	})
+	events <- scanDoneMsg{id: id, projects: projects, duration: time.Since(start)}
+}
+
+func runUpdate(events chan<- tea.Msg, url string) {
+	err := doUpdate(url, func(downloaded, total int64) {
+		select {
+		case events <- updateProgressMsg{downloaded: downloaded, total: total}:
+		default:
+		}
+	})
+	events <- updateDoneMsg{err: err}
+}
+
+func runLaunch(events chan<- tea.Msg, proj ProjectInfo) {
+	notify := func(step int) {
+		select {
+		case events <- launchStepMsg{step: step}:
+		default:
+		}
+	}
+	events <- launchProject(proj, notify)
+}
+
 func checkUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
 		ver, url, err := checkUpdate()
@@ -361,32 +493,36 @@ func waitForNextUpdateCheck() tea.Cmd {
 	})
 }
 
-func performUpdateCmd(url string) tea.Cmd {
-	return func() tea.Msg {
-		err := doUpdate(url)
-		return updateDoneMsg{err: err}
-	}
-}
-
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		textinput.Blink,
 		checkUpdateCmd(),
 		waitForNextUpdateCheck(),
+		m.spinner.Tick,
+		listenEvents(m.events),
 	}
-	if m.state == StateLaunching {
-		cmds = append(cmds, m.spinner.Tick, launchProjectCmd(m.selectedPrj))
+	switch {
+	case m.directMode:
+		go runLaunch(m.events, m.selectedPrj)
+	case m.config.WorkDir != "":
+		go runScan(m.events, m.scanID, m.config.WorkDir)
 	}
 	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		docStyle = docStyle.MaxWidth(m.width).MaxHeight(m.height)
+		barWidth := msg.Width - 24
+		if barWidth < 20 {
+			barWidth = 20
+		}
+		if barWidth > 44 {
+			barWidth = 44
+		}
+		m.updateProg.Width = barWidth
 		if m.state == StateList {
 			m.list.SetSize(msg.Width-6, msg.Height-6)
 		}
@@ -406,6 +542,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case progress.FrameMsg:
+		pm, cmd := m.updateProg.Update(msg)
+		m.updateProg = pm.(progress.Model)
+		return m, cmd
+
 	case updateCheckMsg:
 		if msg.err == nil && msg.version != "" {
 			m.updateVer = msg.version
@@ -413,7 +554,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateAvail = true
 			// Only interrupt with the update prompt when not busy.
 			if m.state != StateLaunching && m.state != StateUpdating &&
-				m.state != StateUpdateFound && m.state != StateConfig {
+				m.state != StateUpdateFound && m.state != StateConfig && !m.scanning {
 				// Don't interrupt while the user is typing a filter.
 				if m.state != StateList || m.list.FilterState() != list.Filtering {
 					m.state = StateUpdateFound
@@ -426,11 +567,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.state = StateError
-			return m, m.startAnimation()
+		} else {
+			m.logMsg = "Update successful! Please restart."
+			m.state = StateSuccess
 		}
-		m.logMsg = "Update successful! Please restart."
-		m.state = StateSuccess
-		return m, m.startAnimation()
+		return m, tea.Batch(m.startAnimation(), listenEvents(m.events))
+
+	case scanProgressMsg:
+		if msg.id == m.scanID {
+			m.scanItems, m.scanFound = msg.items, msg.projects
+		}
+		return m, listenEvents(m.events)
+
+	case scanDoneMsg:
+		if msg.id == m.scanID {
+			m.scanning = false
+			m.scanDur = msg.duration
+			m.buildList(msg.projects)
+		}
+		return m, listenEvents(m.events)
+
+	case launchStepMsg:
+		m.launchStep = msg.step
+		return m, listenEvents(m.events)
+
+	case launchResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = StateError
+		} else {
+			m.logMsg = msg.message
+			m.launchStep = len(launchSteps)
+			m.state = StateSuccess
+		}
+		return m, tea.Batch(m.startAnimation(), listenEvents(m.events))
+
+	case updateProgressMsg:
+		m.updateDownloaded, m.updateTotal = msg.downloaded, msg.total
+		cmd := listenEvents(m.events)
+		if msg.total > 0 {
+			cmd = tea.Batch(m.updateProg.SetPercent(float64(msg.downloaded)/float64(msg.total)), cmd)
+		}
+		return m, cmd
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -464,7 +642,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key.String() {
 			case "y", "Y", "enter":
 				m.state = StateUpdating
-				return m, tea.Batch(m.startAnimation(), m.spinner.Tick, performUpdateCmd(m.updateURL))
+				m.updateDownloaded, m.updateTotal = 0, 0
+				go runUpdate(m.events, m.updateURL)
+				return m, tea.Batch(m.startAnimation(), m.spinner.Tick)
 			case "n", "N", "esc":
 				if m.directMode {
 					return m, tea.Quit
@@ -499,7 +679,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := saveConfig(m.config); err != nil {
 						WriteLog("Failed to save config: " + err.Error())
 					}
-					m.reloadList()
+					m.scanID++
+					m.scanning = true
+					m.scanItems, m.scanFound = 0, 0
+					m.scanDur = 0
+					m.state = StateList
+					go runScan(m.events, m.scanID, path)
 					return m, nil
 				}
 				m.textInput.Placeholder = "Invalid directory! Try again..."
@@ -513,11 +698,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.list.FilterState() != list.Filtering {
 				if key.String() == "c" {
 					m.state = StateConfig
-					currentPath := ""
-					if m.config.WorkDir != "" {
-						currentPath = m.config.WorkDir
-					}
-					m.textInput.SetValue(currentPath)
+					m.textInput.SetValue(m.config.WorkDir)
 					m.textInput.CursorEnd()
 					m.textInput.Focus()
 					return m, m.startAnimation()
@@ -526,7 +707,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if i, ok := m.list.SelectedItem().(ProjectInfo); ok {
 						m.selectedPrj = i
 						m.state = StateLaunching
-						return m, tea.Batch(m.startAnimation(), m.spinner.Tick, launchProjectCmd(m.selectedPrj))
+						m.launchStep = 0
+						go runLaunch(m.events, i)
+						return m, tea.Batch(m.startAnimation(), m.spinner.Tick)
 					}
 				}
 			}
@@ -538,16 +721,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StateLaunching:
 		var spinCmd tea.Cmd
 		m.spinner, spinCmd = m.spinner.Update(msg)
-		if res, ok := msg.(launchResultMsg); ok {
-			if res.err != nil {
-				m.err = res.err
-				m.state = StateError
-				return m, tea.Batch(spinCmd, m.startAnimation())
-			}
-			m.logMsg = res.message
-			m.state = StateSuccess
-			return m, tea.Batch(spinCmd, m.startAnimation())
-		}
 		return m, spinCmd
 
 	case StateError:
@@ -560,7 +733,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m, cmd
+	return m, nil
 }
 
 // ======================================================================================
@@ -597,24 +770,37 @@ func (m model) View() string {
 
 	switch m.state {
 	case StateUpdateFound:
+		old := subTextStyle.Render("v" + AppVersion)
+		arrow := updateHintStyle.Render("  →  ")
 		newVer := lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.updateVer)
 		ui := lipgloss.JoinVertical(lipgloss.Center,
 			titleStyle.Render(" UPDATE AVAILABLE "),
 			"",
-			fmt.Sprintf("New version:      %s", newVer),
-			fmt.Sprintf("Current version:  %s", AppVersion),
+			old+arrow+newVer,
 			"",
 			subTextStyle.Render("Download and install now?"),
-			updateHintStyle.Render("[y] yes   [n] later"),
+			keyChips([2]string{"y", "install"}, [2]string{"n", "later"}),
 		)
 		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
 		return centerContent(box.Render(ui))
 
 	case StateUpdating:
+		var line string
+		if m.updateTotal > 0 {
+			pct := float64(m.updateDownloaded) / float64(m.updateTotal)
+			line = fmt.Sprintf("%s / %s  ·  %.0f%%", humanBytes(m.updateDownloaded), humanBytes(m.updateTotal), pct*100)
+		} else {
+			line = humanBytes(m.updateDownloaded) + " downloaded"
+		}
 		ui := lipgloss.JoinVertical(lipgloss.Center,
-			m.spinner.View()+" Updating...",
+			titleStyle.Render(" UPDATING "),
 			"",
-			subTextStyle.Render("Application will restart automatically"),
+			m.spinner.View()+" Downloading LazyPLCNext "+m.updateVer,
+			"",
+			m.updateProg.View(),
+			progressTextStyle.Render(line),
+			"",
+			subTextStyle.Render("Please wait…"),
 		)
 		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
 		return centerContent(box.Render(ui))
@@ -623,10 +809,10 @@ func (m model) View() string {
 		ui := lipgloss.JoinVertical(lipgloss.Left,
 			titleStyle.Render(" CONFIGURATION "),
 			"",
-			lipgloss.NewStyle().Foreground(colText).Render("Enter project directory path:"),
+			midTextStyle.Render("Where are your PLCnext projects?"),
 			m.textInput.View(),
 			"",
-			subTextStyle.Render("Enter  scan   Esc  cancel"),
+			keyChips([2]string{"enter", "scan"}, [2]string{"esc", "cancel"}),
 		)
 		box := boxStyle.Width(animWidth)
 		return centerContent(box.Render(ui))
@@ -642,13 +828,19 @@ func (m model) View() string {
 
 		sep := separatorStyle.Render(strings.Repeat("─", contentWidth))
 
-		body := m.list.View()
-		if len(m.list.Items()) == 0 {
-			emptyMsg := emptyStyle.Width(contentWidth).Render(
-				"No projects found in:\n" + m.config.WorkDir +
-					"\n\nPress [c] to change the directory.",
+		var body string
+		switch {
+		case m.scanning:
+			body = lipgloss.JoinVertical(lipgloss.Left,
+				m.spinner.View()+" Scanning "+m.config.WorkDir,
+				scanTextStyle.Render(fmt.Sprintf("%d items · %d projects found", m.scanItems, m.scanFound)),
 			)
-			body = emptyMsg
+		case len(m.list.Items()) == 0:
+			body = emptyStyle.Width(contentWidth).Render(
+				"No projects found in\n" + m.config.WorkDir + "\n\n" +
+					keyChips([2]string{"c", "choose another folder"}))
+		default:
+			body = m.list.View()
 		}
 
 		return docStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
@@ -667,40 +859,50 @@ func (m model) View() string {
 		if m.selectedPrj.GitBranch != "" {
 			gitIcon := ""
 			if m.config.UseNerdFonts {
-				gitIcon = " "
+				gitIcon = "\ue0a0 "
 			}
 			branchInfo = gitBadgeStyle.Render(gitIcon + m.selectedPrj.GitBranch)
 		}
 
-		ui := lipgloss.JoinVertical(lipgloss.Center,
-			m.spinner.View()+" Launching Environment",
+		steps := make([]string, 0, len(launchSteps))
+		for i, s := range launchSteps {
+			switch {
+			case i < m.launchStep:
+				steps = append(steps, stepDoneStyle.Render("✔ "+s))
+			case i == m.launchStep:
+				steps = append(steps, stepCurrentStyle.Render("❯ "+s))
+			default:
+				steps = append(steps, stepPendStyle.Render("○ "+s))
+			}
+		}
+
+		lines := append([]string{
+			m.spinner.View() + " Launching Environment",
 			"",
 			info,
 			lipgloss.JoinHorizontal(lipgloss.Center, ver, branchInfo),
 			"",
-			lipgloss.NewStyle().Italic(true).Foreground(colSubText).Render("Checking processes..."),
-		)
+		}, steps...)
+		ui := lipgloss.JoinVertical(lipgloss.Center, lines...)
 		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
 		return centerContent(box.Render(ui))
 
 	case StateSuccess:
 		isUpdate := strings.Contains(m.logMsg, "Update successful")
 
-		var helpText string
+		var help string
 		if isUpdate {
-			helpText = updateHintStyle.Render("Press [R] to restart now")
+			help = keyChips([2]string{"R", "restart now"})
 		} else {
-			helpText = subTextStyle.Render("Press Enter or Esc to return to list")
+			help = keyChips([2]string{"enter", "back to list"})
 		}
 
-		ui := lipgloss.JoinVertical(lipgloss.Center,
-			lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render("✔ SUCCESS"),
-			"",
-			lipgloss.NewStyle().Foreground(colText).Bold(true).Render(m.selectedPrj.Name),
-			subTextStyle.Render(m.logMsg),
-			"",
-			helpText,
-		)
+		lines := []string{gradientText("SUCCESS", "#25A065", "#EFB335"), ""}
+		if m.selectedPrj.Name != "" {
+			lines = append(lines, midTextStyle.Bold(true).Render(m.selectedPrj.Name))
+		}
+		lines = append(lines, subTextStyle.Render(m.logMsg), "", help)
+		ui := lipgloss.JoinVertical(lipgloss.Center, lines...)
 		box := boxStyle.Width(animWidth).Align(lipgloss.Center)
 		return centerContent(box.Render(ui))
 
@@ -710,7 +912,7 @@ func (m model) View() string {
 			errWidth = 10
 		}
 		ui := lipgloss.JoinVertical(lipgloss.Center,
-			lipgloss.NewStyle().Foreground(colError).Bold(true).Render("✖ ERROR"),
+			crossStyle.Render("✖ ERROR"),
 			"",
 			lipgloss.NewStyle().Width(errWidth).Align(lipgloss.Center).Render(fmt.Sprintf("%v", m.err)),
 			"",
@@ -729,23 +931,22 @@ func (m model) renderHeader() string {
 		contentWidth = 1
 	}
 
-	title := appTitleStyle.Render("LazyPLCNext")
-	ver := appVersionStyle.Render("v" + AppVersion)
-
-	left := fmt.Sprintf("%s %s", title, ver)
-
-	updateTag := ""
+	left := lipgloss.JoinHorizontal(lipgloss.Center,
+		gradientTitle,
+		" ",
+		verBadgeStyle.Render("v"+AppVersion),
+	)
 	if m.updateAvail {
-		updateTag = updateHintStyle.Render(" ↑ update available")
+		left = lipgloss.JoinHorizontal(lipgloss.Center, left, updateHintStyle.Render("  ↑ update available"))
 	}
 
-	leftLen := lipgloss.Width(left) + lipgloss.Width(updateTag)
+	leftLen := lipgloss.Width(left)
 	dots := ""
 	if contentWidth > leftLen {
 		dots = strings.Repeat(" ", contentWidth-leftLen)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, updateTag, dots)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, dots)
 }
 
 func (m model) renderStatusBar() string {
@@ -754,28 +955,26 @@ func (m model) renderStatusBar() string {
 		contentWidth = 1
 	}
 
-	idx := m.list.Index()
-	if idx >= len(m.list.Items()) {
-		idx = len(m.list.Items()) - 1
+	var left string
+	switch {
+	case m.scanning:
+		left = footerStyle.Render(fmt.Sprintf("Scanning… %d items · %d found", m.scanItems, m.scanFound))
+	case m.scanDur > 0:
+		left = footerStyle.Render(fmt.Sprintf("%d projects", len(m.list.Items()))) +
+			subTextStyle.Render(fmt.Sprintf(" · scanned in %.1fs", m.scanDur.Seconds()))
+	default:
+		left = footerStyle.Render(fmt.Sprintf("%d projects", len(m.list.Items())))
 	}
-	if idx < 0 {
-		idx = 0
-	}
-	pos := footerStyle.Render(fmt.Sprintf("%d/%d", idx+1, len(m.list.Items())))
 
-	left := footerStyle.Render(fmt.Sprintf("Projects: %d", len(m.list.Items())))
-
-	var rightParts []string
-	if m.config.UseNerdFonts {
-		rightParts = append(rightParts, " nerd-fonts")
-	}
-	rightParts = append(rightParts, "c config")
-	rightParts = append(rightParts, "q quit")
-	right := footerStyle.Render(strings.Join(rightParts, "   "))
+	right := keyChips(
+		[2]string{"/", "filter"},
+		[2]string{"↵", "launch"},
+		[2]string{"c", "path"},
+		[2]string{"q", "quit"},
+	)
 
 	leftLen := lipgloss.Width(left)
-	rightLen := lipgloss.Width(right) + lipgloss.Width(pos) + 2
-	gap := contentWidth - leftLen - rightLen
+	gap := contentWidth - leftLen - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
@@ -783,8 +982,6 @@ func (m model) renderStatusBar() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		left,
 		strings.Repeat(" ", gap),
-		pos,
-		" ",
 		right,
 	)
 }

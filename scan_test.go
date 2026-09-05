@@ -257,6 +257,48 @@ func TestCompareProjects(t *testing.T) {
 	}
 }
 
+func TestScanProjectsProgress(t *testing.T) {
+	root := t.TempDir()
+
+	writeZip(t, filepath.Join(root, "Alpha.pcwex"), map[string]string{
+		"Alpha/_properties/additional.xml": sampleAdditionalXML,
+	})
+	beta := filepath.Join(root, "BetaFlat", "_properties")
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beta, "additional.xml"), []byte(sampleAdditionalXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "BetaFlat", "Solution.xml"), []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls, lastItems, lastFound int
+	projects := ScanProjectsProgress(root, func(items, found int) {
+		calls++
+		lastItems, lastFound = items, found
+	})
+
+	if len(projects) != 2 {
+		t.Fatalf("ScanProjectsProgress() returned %d projects, want 2", len(projects))
+	}
+	if calls < 2 {
+		t.Errorf("progress callback fired %d times, want at least one per project", calls)
+	}
+	if lastFound != 2 {
+		t.Errorf("last reported found = %d, want 2", lastFound)
+	}
+	if lastItems == 0 {
+		t.Error("last reported items = 0, want > 0")
+	}
+
+	// The plain wrapper must return the same projects without callbacks.
+	if plain := ScanProjects(root); len(plain) != len(projects) {
+		t.Errorf("ScanProjects() returned %d projects, want %d", len(plain), len(projects))
+	}
+}
+
 func TestScanProjects(t *testing.T) {
 	root := t.TempDir()
 

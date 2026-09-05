@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -52,7 +53,9 @@ func checkUpdate() (string, string, error) {
 	return "", "", nil
 }
 
-func doUpdate(url string) error {
+// doUpdate downloads the release asset from url and applies it. The optional
+// progress callback reports downloaded/total bytes as the download advances.
+func doUpdate(url string, progress func(downloaded, total int64)) error {
 	// Generous timeout: this downloads the full .exe release asset.
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(url)
@@ -60,7 +63,41 @@ func doUpdate(url string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	return selfupdate.Apply(resp.Body, selfupdate.Options{})
+
+	body := io.Reader(resp.Body)
+	if progress != nil {
+		body = newProgressReader(resp.Body, resp.ContentLength, 256*1024, progress)
+	}
+	return selfupdate.Apply(body, selfupdate.Options{})
+}
+
+// progressReader wraps a reader and emits progress callbacks at fixed byte
+// steps plus a final one at EOF, so the UI is not flooded with messages.
+type progressReader struct {
+	r          io.Reader
+	total      int64
+	read       int64
+	lastSent   int64
+	step       int64
+	onProgress func(downloaded, total int64)
+}
+
+func newProgressReader(r io.Reader, total, step int64, fn func(downloaded, total int64)) *progressReader {
+	return &progressReader{r: r, total: total, step: step, onProgress: fn}
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.read += int64(n)
+	if p.read-p.lastSent >= p.step {
+		p.lastSent = p.read
+		p.onProgress(p.read, p.total)
+	}
+	if err == io.EOF && p.read > p.lastSent {
+		p.lastSent = p.read
+		p.onProgress(p.read, p.total)
+	}
+	return n, err
 }
 
 func cleanupOldVersion() {
