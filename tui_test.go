@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestViewRendersAllStates(t *testing.T) {
@@ -51,6 +53,33 @@ func TestViewRendersAllStates(t *testing.T) {
 				t.Error("View() returned empty output")
 			}
 		})
+	}
+}
+
+func TestStateListUpdateBeforeScanDoesNotPanic(t *testing.T) {
+	msgs := []tea.Msg{
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		tea.KeyMsg{Type: tea.KeyDown},
+		tea.MouseMsg{X: 4, Y: 4, Action: tea.MouseActionMotion},
+	}
+
+	for _, scanning := range []bool{true, false} {
+		m := initialModel(nil)
+		m.state = StateList
+		m.scanning = scanning
+		m.config.WorkDir = `C:\proj`
+
+		var tm tea.Model = m
+		for _, msg := range msgs {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("scanning=%v Update(%T) panicked: %v", scanning, msg, r)
+					}
+				}()
+				tm, _ = tm.Update(msg)
+			}()
+		}
 	}
 }
 

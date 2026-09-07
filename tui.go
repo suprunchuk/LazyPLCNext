@@ -370,7 +370,22 @@ func initialModel(directProj *ProjectInfo) model {
 		}
 	}
 
+	m.list = m.newProjectList(nil)
 	return m
+}
+
+func (m *model) newProjectList(items []list.Item) list.Model {
+	delegate := projectDelegate{UseNerdFonts: m.config.UseNerdFonts}
+	l := list.New(items, delegate, 0, 0)
+	// The brand header and custom footer replace the built-in chrome.
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
+	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(2)
+	if m.width > 0 {
+		l.SetSize(m.width-6, m.height-6)
+	}
+	return l
 }
 
 func (m *model) buildList(projects []ProjectInfo) {
@@ -381,19 +396,8 @@ func (m *model) buildList(projects []ProjectInfo) {
 		items[i] = p
 	}
 
-	delegate := projectDelegate{UseNerdFonts: m.config.UseNerdFonts}
-	l := list.New(items, delegate, 0, 0)
-	// The brand header and custom footer replace the built-in chrome.
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
-	l.SetShowHelp(false)
-	l.Styles.PaginationStyle = list.DefaultStyles().PaginationStyle.PaddingLeft(2)
-
-	m.list = l
+	m.list = m.newProjectList(items)
 	m.state = StateList
-	if m.width > 0 {
-		m.list.SetSize(m.width-6, m.height-6)
-	}
 }
 
 type tickMsg time.Time
@@ -685,7 +689,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scanDur = 0
 					m.state = StateList
 					go runScan(m.events, m.scanID, path)
-					return m, nil
+					return m, m.spinner.Tick
 				}
 				m.textInput.Placeholder = "Invalid directory! Try again..."
 				m.textInput.SetValue("")
@@ -703,7 +707,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.Focus()
 					return m, m.startAnimation()
 				}
-				if key.Type == tea.KeyEnter {
+				if !m.scanning && key.Type == tea.KeyEnter {
 					if i, ok := m.list.SelectedItem().(ProjectInfo); ok {
 						m.selectedPrj = i
 						m.state = StateLaunching
@@ -713,6 +717,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		}
+		if m.scanning {
+			var spinCmd tea.Cmd
+			m.spinner, spinCmd = m.spinner.Update(msg)
+			return m, spinCmd
 		}
 		var listCmd tea.Cmd
 		m.list, listCmd = m.list.Update(msg)
