@@ -25,6 +25,12 @@ const (
 
 var AppVersion = "dev"
 
+func appVersionLabel() string {
+	v := strings.TrimPrefix(strings.TrimSpace(AppVersion), "v")
+	v = strings.TrimPrefix(v, "V")
+	return "v" + v
+}
+
 func main() {
 	cleanupOldVersion()
 
@@ -43,7 +49,7 @@ func main() {
 	for _, arg := range args {
 		switch arg {
 		case "-h", "--help", "-help":
-			fmt.Printf("LazyPLCNext v%s\n\n", AppVersion)
+			fmt.Printf("LazyPLCNext %s\n\n", appVersionLabel())
 			fmt.Println("Usage:")
 			fmt.Println("  LazyPLCNext.exe                          — open project browser")
 			fmt.Println("  LazyPLCNext.exe <path>                   — open project directly")

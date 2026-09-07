@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestViewRendersAllStates(t *testing.T) {
@@ -54,6 +56,33 @@ func TestViewRendersAllStates(t *testing.T) {
 	}
 }
 
+func TestStateListUpdateBeforeScanDoesNotPanic(t *testing.T) {
+	msgs := []tea.Msg{
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		tea.KeyMsg{Type: tea.KeyDown},
+		tea.MouseMsg{X: 4, Y: 4, Action: tea.MouseActionMotion},
+	}
+
+	for _, scanning := range []bool{true, false} {
+		m := initialModel(nil)
+		m.state = StateList
+		m.scanning = scanning
+		m.config.WorkDir = `C:\proj`
+
+		var tm tea.Model = m
+		for _, msg := range msgs {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("scanning=%v Update(%T) panicked: %v", scanning, msg, r)
+					}
+				}()
+				tm, _ = tm.Update(msg)
+			}()
+		}
+	}
+}
+
 func TestBuildListAndChrome(t *testing.T) {
 	m := initialModel(nil)
 	m.width, m.height = 100, 30
@@ -75,5 +104,36 @@ func TestBuildListAndChrome(t *testing.T) {
 	}
 	if s := m.renderStatusBar(); !strings.Contains(s, "projects") || !strings.Contains(s, "scanned in") {
 		t.Errorf("status bar should contain counts and scan duration, got %q", s)
+	}
+}
+
+func TestAppVersionLabel(t *testing.T) {
+	orig := AppVersion
+	t.Cleanup(func() { AppVersion = orig })
+
+	cases := []struct {
+		in, want string
+	}{
+		{"dev", "vdev"},
+		{"2.0.0", "v2.0.0"},
+		{"v2.0.0", "v2.0.0"},
+		{"V2.0.0", "v2.0.0"},
+	}
+	for _, tc := range cases {
+		AppVersion = tc.in
+		if got := appVersionLabel(); got != tc.want {
+			t.Errorf("AppVersion=%q: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	AppVersion = "v2.0.0"
+	m := initialModel(nil)
+	m.width, m.height = 100, 30
+	h := m.renderHeader()
+	if !strings.Contains(h, "v2.0.0") {
+		t.Errorf("header missing v2.0.0, got %q", h)
+	}
+	if strings.Contains(h, "vv2.0.0") {
+		t.Errorf("header has doubled v prefix, got %q", h)
 	}
 }
