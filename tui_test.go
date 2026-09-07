@@ -106,3 +106,34 @@ func TestBuildListAndChrome(t *testing.T) {
 		t.Errorf("status bar should contain counts and scan duration, got %q", s)
 	}
 }
+
+func TestAppVersionLabel(t *testing.T) {
+	orig := AppVersion
+	t.Cleanup(func() { AppVersion = orig })
+
+	cases := []struct {
+		in, want string
+	}{
+		{"dev", "vdev"},
+		{"2.0.0", "v2.0.0"},
+		{"v2.0.0", "v2.0.0"},
+		{"V2.0.0", "v2.0.0"},
+	}
+	for _, tc := range cases {
+		AppVersion = tc.in
+		if got := appVersionLabel(); got != tc.want {
+			t.Errorf("AppVersion=%q: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	AppVersion = "v2.0.0"
+	m := initialModel(nil)
+	m.width, m.height = 100, 30
+	h := m.renderHeader()
+	if !strings.Contains(h, "v2.0.0") {
+		t.Errorf("header missing v2.0.0, got %q", h)
+	}
+	if strings.Contains(h, "vv2.0.0") {
+		t.Errorf("header has doubled v prefix, got %q", h)
+	}
+}

@@ -779,7 +779,7 @@ func (m model) View() string {
 
 	switch m.state {
 	case StateUpdateFound:
-		old := subTextStyle.Render("v" + AppVersion)
+		old := subTextStyle.Render(appVersionLabel())
 		arrow := updateHintStyle.Render("  →  ")
 		newVer := lipgloss.NewStyle().Foreground(colPrimary).Bold(true).Render(m.updateVer)
 		ui := lipgloss.JoinVertical(lipgloss.Center,
@@ -943,7 +943,7 @@ func (m model) renderHeader() string {
 	left := lipgloss.JoinHorizontal(lipgloss.Center,
 		gradientTitle,
 		" ",
-		verBadgeStyle.Render("v"+AppVersion),
+		verBadgeStyle.Render(appVersionLabel()),
 	)
 	if m.updateAvail {
 		left = lipgloss.JoinHorizontal(lipgloss.Center, left, updateHintStyle.Render("  ↑ update available"))
